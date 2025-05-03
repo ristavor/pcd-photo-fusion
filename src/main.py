@@ -41,8 +41,7 @@ def main():
         height=600
     )
 
-    print("Закройте окно 'Colored Point Cloud', затем нажмите Enter для выхода.")
-    input()
+
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
