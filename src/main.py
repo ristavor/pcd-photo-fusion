@@ -1,3 +1,4 @@
+"""
 import cv2
 import open3d as o3d
 from pathlib import Path
@@ -41,4 +42,36 @@ def main():
     cv2.destroyAllWindows()
 
 if __name__ == '__main__':
+    main()
+"""
+#!/usr/bin/env python3
+import sys
+from pathlib import Path
+import cv2
+
+from src.rectifier.rectifier import ImageRectifier
+
+def main():
+    ROOT       = Path(__file__).resolve().parent.parent
+    img_path   = ROOT / 'data/2011_09_28_drive_0034_extract/image_02/data/0000000000.png'
+    calib_path = ROOT / 'data/2011_09_28_calib/calib_cam_to_cam.txt'
+
+    img = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
+    if img is None:
+        print(f"ERROR loading image {img_path}", file=sys.stderr); sys.exit(1)
+
+    h, w = img.shape[:2]
+
+    cv2.imshow('Original', img)
+
+    # запуск rectifier: камера #2, размер (w,h)
+    rect = ImageRectifier(str(calib_path), cam_idx=2, image_size=(w,h))
+    img_rect = rect.rectify(img)
+
+    cv2.imshow('Rectified', img_rect)
+    print("Press any key...")
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+if __name__=='__main__':
     main()
