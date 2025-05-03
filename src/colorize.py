@@ -16,11 +16,44 @@ def project_points(pts: np.ndarray, R: np.ndarray, T: np.ndarray, K: np.ndarray)
 
 def assign_colors(uv: np.ndarray, img: np.ndarray):
     """
-    По проекциям uv (M×2) и изображению img возвращает массив цветов (M×3) в формате [0,1].
+    uv: (M,2) float — вещественные пиксельные координаты [u,v].
+    img: H×W×3 uint8.
+    Возвращает colors: (M,3) в [0,1], формат RGB, интерполированно билинейно.
     """
-    # img имеет формат H×W×3, uv[:,0]=u, uv[:,1]=v
-    colors = img[uv[:,1], uv[:,0]] / 255.0  # нормируем uint8→float
-    # Open3D ждёт цвета в формате R,G,B
-    # Если img в BGR (OpenCV), сначала перекладываем в RGB:
-    colors = colors[:, ::-1]
-    return colors
+    h, w = img.shape[:2]
+    u = uv[:, 0]
+    v = uv[:, 1]
+
+    # 1) Целые индексы четырёх соседних пикселей
+    x0 = np.floor(u).astype(int)
+    y0 = np.floor(v).astype(int)
+    x1 = np.clip(x0 + 1, 0, w - 1)
+    y1 = np.clip(y0 + 1, 0, h - 1)
+
+    # 2) Доли отступа от x0,y0
+    du = u - x0  # [0…1)
+    dv = v - y0  # [0…1)
+
+    # 3) Веса для каждого угла
+    wa = (1 - du) * (1 - dv)  # верх-лево: (x0,y0)
+    wb = du       * (1 - dv)  # верх-право: (x1,y0)
+    wc = (1 - du) * dv        # низ-лево:  (x0,y1)
+    wd = du       * dv        # низ-право:  (x1,y1)
+
+    # 4) Берём цвета из четырёх точек
+    Ia = img[y0, x0]  # shape (M,3)
+    Ib = img[y0, x1]
+    Ic = img[y1, x0]
+    Id = img[y1, x1]
+
+    # 5) Составляем итоговый цвет
+    # приводим все к float и нормируем [0,1]
+    colors = (
+        Ia * wa[:, None]
+      + Ib * wb[:, None]
+      + Ic * wc[:, None]
+      + Id * wd[:, None]
+    ) / 255.0
+
+    # 6) Переворачиваем BGR→RGB (если используем OpenCV-формат)
+    return colors[:, ::-1]
