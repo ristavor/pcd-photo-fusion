@@ -1,59 +1,108 @@
-# src/colorize.py
 import numpy as np
+import open3d as o3d
 
-def project_points(pts: np.ndarray, R: np.ndarray, T: np.ndarray, K: np.ndarray):
+def project_points(pts: np.ndarray, R: np.ndarray, T: np.ndarray, K: np.ndarray) -> np.ndarray:
     """
     Проецирует LiDAR-точки pts (N×3) в пиксели изображения.
-    Возвращает массив uv (N×2) и глубины z (N).
+    Возвращает массив uvz (N×3): [u, v, z_cam].
     """
-    # Переводим в систему камеры
     P_cam = (R @ pts.T + T[:, None]).T    # N×3
-    # Проецируем через K
-    uvw = (K @ P_cam.T).T                # N×3
-    u = uvw[:, 0] / uvw[:, 2]
-    v = uvw[:, 1] / uvw[:, 2]
-    return np.vstack((u, v, P_cam[:, 2])).T  # N×3: [u, v, z]
+    uvw   = (K @ P_cam.T).T               # N×3
+    u     = uvw[:, 0] / uvw[:, 2]
+    v     = uvw[:, 1] / uvw[:, 2]
+    z     = P_cam[:, 2]
+    return np.vstack((u, v, z)).T         # N×3
 
-def assign_colors(uv: np.ndarray, img: np.ndarray):
+def _bilinear_interpolate(img: np.ndarray, uv: np.ndarray) -> np.ndarray:
     """
-    uv: (M,2) float — вещественные пиксельные координаты [u,v].
-    img: H×W×3 uint8.
-    Возвращает colors: (M,3) в [0,1], формат RGB, интерполированно билинейно.
+    Билинейная интерполяция цвета в img по вещественным координатам uv (M×2).
+    Возвращает цвета (M×3) в формате RGB, float в [0,1].
     """
     h, w = img.shape[:2]
-    u = uv[:, 0]
-    v = uv[:, 1]
+    u, v = uv[:,0], uv[:,1]
 
-    # 1) Целые индексы четырёх соседних пикселей
+    # Целые индексы четырёх соседних пикселей
     x0 = np.floor(u).astype(int)
     y0 = np.floor(v).astype(int)
-    x1 = np.clip(x0 + 1, 0, w - 1)
-    y1 = np.clip(y0 + 1, 0, h - 1)
+    x1 = x0 + 1
+    y1 = y0 + 1
 
-    # 2) Доли отступа от x0,y0
-    du = u - x0  # [0…1)
-    dv = v - y0  # [0…1)
+    # Маска точек внутри изображения
+    in_bounds = (x0 >= 0) & (x1 < w) & (y0 >= 0) & (y1 < h)
+    # Логирование «выпавших»
+    num_oob = np.count_nonzero(~in_bounds)
+    if num_oob:
+        print(f"[colorize] {num_oob} точек вне изображения → дефолтный цвет")
 
-    # 3) Веса для каждого угла
-    wa = (1 - du) * (1 - dv)  # верх-лево: (x0,y0)
-    wb = du       * (1 - dv)  # верх-право: (x1,y0)
-    wc = (1 - du) * dv        # низ-лево:  (x0,y1)
-    wd = du       * dv        # низ-право:  (x1,y1)
+    # Чтобы не выйти за границы, зажимаем индексы
+    x0c = np.clip(x0, 0, w-1)
+    x1c = np.clip(x1, 0, w-1)
+    y0c = np.clip(y0, 0, h-1)
+    y1c = np.clip(y1, 0, h-1)
 
-    # 4) Берём цвета из четырёх точек
-    Ia = img[y0, x0]  # shape (M,3)
-    Ib = img[y0, x1]
-    Ic = img[y1, x0]
-    Id = img[y1, x1]
+    # Доли смещения
+    du = u - x0
+    dv = v - y0
 
-    # 5) Составляем итоговый цвет
-    # приводим все к float и нормируем [0,1]
+    # Веса
+    wa = (1 - du) * (1 - dv)
+    wb =    du   * (1 - dv)
+    wc = (1 - du) *    dv
+    wd =    du   *    dv
+
+    # Вынимаем цвета (uint8 BGR → float)
+    Ia = img[y0c, x0c].astype(float)
+    Ib = img[y0c, x1c].astype(float)
+    Ic = img[y1c, x0c].astype(float)
+    Id = img[y1c, x1c].astype(float)
+
+    # Билинейная интерполяция
     colors = (
-        Ia * wa[:, None]
-      + Ib * wb[:, None]
-      + Ic * wc[:, None]
-      + Id * wd[:, None]
-    ) / 255.0
+          Ia * wa[:,None]
+        + Ib * wb[:,None]
+        + Ic * wc[:,None]
+        + Id * wd[:,None]
+    ) / 255.0  # в [0,1]
 
-    # 6) Переворачиваем BGR→RGB (если используем OpenCV-формат)
-    return colors[:, ::-1]
+    # BGR → RGB
+    colors = colors[:, ::-1]
+
+    # Присваиваем дефолтный цвет «выпавшим»
+    if num_oob:
+        default_rgb = np.array([0,0,0], dtype=float)  # чёрный
+        colors[~in_bounds] = default_rgb
+
+    return colors
+
+
+def colorize(
+    xyz: np.ndarray,
+    img: np.ndarray,
+    R: np.ndarray,
+    T: np.ndarray,
+    K: np.ndarray
+) -> o3d.geometry.PointCloud:
+    """
+    1) Проецирует xyz → uvz
+    2) Оставляет лишь z>0 и в кадре
+    3) Билинейно окрашивает видимые точки
+    4) Возвращает готовый o3d.geometry.PointCloud
+    """
+    # 1) Проекция
+    uvz = project_points(xyz, R, T, K)   # N×3
+
+    # 2) Фильтрация по кадру и z>0
+    h, w      = img.shape[:2]
+    u, v, z   = uvz[:,0], uvz[:,1], uvz[:,2]
+    mask      = (z > 0) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+    uv_vis    = uvz[mask,:2]             # M×2
+    xyz_vis   = xyz[mask]                # M×3
+
+    # 3) Билинейная интерполяция цветов
+    colors    = _bilinear_interpolate(img, uv_vis)  # M×3 float [0..1]
+
+    # 4) Собираем PCD
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(xyz_vis)
+    pcd.colors = o3d.utility.Vector3dVector(colors)
+    return pcd
