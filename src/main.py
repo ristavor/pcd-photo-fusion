@@ -44,34 +44,49 @@ def main():
 if __name__ == '__main__':
     main()
 """
-#!/usr/bin/env python3
 import sys
 from pathlib import Path
-import cv2
 
-from src.rectifier.rectifier import ImageRectifier
+import cv2
+from src.rectifier import ImageRectifier, read_cam_to_cam
+
 
 def main():
-    ROOT       = Path(__file__).resolve().parent.parent
-    img_path   = ROOT / 'data/2011_09_28_drive_0034_extract/image_02/data/0000000000.png'
-    calib_path = ROOT / 'data/2011_09_28_calib/calib_cam_to_cam.txt'
+    ROOT = Path(__file__).resolve().parent.parent
 
+    # 1) Полный словарь калибровки
+    calib_cam = ROOT / 'data' \
+                   / '2011_09_28_calib' \
+                   / 'calib_cam_to_cam.txt'
+    cam_dict = read_cam_to_cam(str(calib_cam))
+
+    # 2) Выбираем камеру №2
+    cam_idx = 2
+    rect = cam_dict[f'S_rect_0{cam_idx}'].astype(int)
+    w_rect, h_rect = rect[0], rect[1]
+
+    # 3) Загружаем исходник
+    img_path = ROOT / 'data' \
+                   / '2011_09_28_drive_0034_extract' \
+                   / 'image_02' \
+                   / 'data' \
+                   / '0000000005.png'
     img = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
     if img is None:
-        print(f"ERROR loading image {img_path}", file=sys.stderr); sys.exit(1)
-
-    h, w = img.shape[:2]
-
+        print(f"ERROR: не удалось загрузить {img_path}", file=sys.stderr)
+        sys.exit(1)
     cv2.imshow('Original', img)
 
-    # запуск rectifier: камера #2, размер (w,h)
-    rect = ImageRectifier(str(calib_path), cam_idx=2, image_size=(w,h))
-    img_rect = rect.rectify(img)
+    # 4) Делам rectify + crop
+    rectifier = ImageRectifier(str(calib_cam), cam_idx)
+    img_rect  = rectifier.rectify(img)
+    img_crop  = img_rect[0:h_rect, 0:w_rect]
+    cv2.imshow('Rectified & Cropped', img_crop)
 
-    cv2.imshow('Rectified', img_rect)
-    print("Press any key...")
+    print("Нажмите любую клавишу для выхода…")
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-if __name__=='__main__':
+
+if __name__ == '__main__':
     main()
