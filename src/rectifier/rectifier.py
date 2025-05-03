@@ -1,4 +1,5 @@
 from pathlib import Path
+
 import cv2
 import numpy as np
 
@@ -7,6 +8,7 @@ from .calib import (
     get_full_image_size,
     get_rectified_size,
 )
+
 
 class ImageRectifier:
     """
@@ -17,10 +19,10 @@ class ImageRectifier:
     """
 
     def __init__(
-        self,
-        calib_cam_path: Path | str,
-        cam_idx: int,
-        interp: int = cv2.INTER_LINEAR
+            self,
+            calib_cam_path: Path | str,
+            cam_idx: int,
+            interp: int = cv2.INTER_LINEAR
     ) -> None:
         """
         :param calib_cam_path: путь к calib_cam_to_cam.txt
@@ -34,17 +36,17 @@ class ImageRectifier:
 
         # 2) Получаем размеры:
         #    полный выпрямлённый кадр S_0X и итоговый кроп S_rect_0X
-        w_full, h_full     = get_full_image_size(calib_cam_path, cam_idx)
+        w_full, h_full = get_full_image_size(calib_cam_path, cam_idx)
         self.w_crop, self.h_crop = get_rectified_size(calib_cam_path, cam_idx)
 
         # 3) Внутренняя матрица для remap — это P_rect[:3,:3]
-        self.K       = K
-        self.D       = D
-        self.R_rect  = R_rect
-        self.P_new   = P_rect[:3, :3]
+        self.K = K
+        self.D = D
+        self.R_rect = R_rect
+        self.P_new = P_rect[:3, :3]
 
         # Параметры для lazy-инициализации remap-карт
-        self._map    = None
+        self._map = None
         self._params = dict(size=(w_full, h_full), interp=interp)
 
     def _init_map(self):
@@ -54,12 +56,12 @@ class ImageRectifier:
         if self._map is None:
             w_full, h_full = self._params['size']
             self._map = cv2.initUndistortRectifyMap(
-                cameraMatrix    = self.K,
-                distCoeffs      = self.D,
-                R               = self.R_rect,
-                newCameraMatrix = self.P_new,
-                size            = (w_full, h_full),
-                m1type          = cv2.CV_32FC1,
+                cameraMatrix=self.K,
+                distCoeffs=self.D,
+                R=self.R_rect,
+                newCameraMatrix=self.P_new,
+                size=(w_full, h_full),
+                m1type=cv2.CV_32FC1,
             )
         return self._map
 
@@ -78,4 +80,4 @@ class ImageRectifier:
             interpolation=self._params['interp']
         )
         # жёсткий crop от (0,0) до (w_crop, h_crop)
-        return full[0 : self.h_crop, 0 : self.w_crop]
+        return full[0: self.h_crop, 0: self.w_crop]

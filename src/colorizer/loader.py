@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 
+
 def load_image(path: str) -> np.ndarray:
     """
     Читает PNG/JPEG-картинку и возвращает NumPy-матрицу (H×W×3).
@@ -9,6 +10,7 @@ def load_image(path: str) -> np.ndarray:
     if img is None:
         raise FileNotFoundError(f"Не удалось загрузить изображение: {path}")
     return img
+
 
 def load_velodyne(path: str) -> np.ndarray:
     """

@@ -1,5 +1,6 @@
 import numpy as np
 
+
 def read_cam_to_cam(path: str) -> dict:
     """
     Считывает параметры камеры из calib_cam_to_cam.txt.
@@ -11,6 +12,7 @@ def read_cam_to_cam(path: str) -> dict:
             key, vals = line.split(':', 1)
             data[key.strip()] = np.fromstring(vals, sep=' ')
     return data
+
 
 def read_velo_to_cam(path: str) -> tuple[np.ndarray, np.ndarray]:
     """

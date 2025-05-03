@@ -48,6 +48,7 @@ import sys
 from pathlib import Path
 
 import cv2
+
 from src.rectifier import ImageRectifier, read_cam_to_cam
 
 
@@ -56,8 +57,8 @@ def main():
 
     # 1) Полный словарь калибровки
     calib_cam = ROOT / 'data' \
-                   / '2011_09_28_calib' \
-                   / 'calib_cam_to_cam.txt'
+                / '2011_09_28_calib' \
+                / 'calib_cam_to_cam.txt'
     cam_dict = read_cam_to_cam(str(calib_cam))
 
     # 2) Выбираем камеру №2
@@ -67,10 +68,10 @@ def main():
 
     # 3) Загружаем исходник
     img_path = ROOT / 'data' \
-                   / '2011_09_28_drive_0034_extract' \
-                   / 'image_02' \
-                   / 'data' \
-                   / '0000000005.png'
+               / '2011_09_28_drive_0034_extract' \
+               / 'image_02' \
+               / 'data' \
+               / '0000000005.png'
     img = cv2.imread(str(img_path), cv2.IMREAD_UNCHANGED)
     if img is None:
         print(f"ERROR: не удалось загрузить {img_path}", file=sys.stderr)
@@ -79,8 +80,8 @@ def main():
 
     # 4) Делам rectify + crop
     rectifier = ImageRectifier(str(calib_cam), cam_idx)
-    img_rect  = rectifier.rectify(img)
-    img_crop  = img_rect[0:h_rect, 0:w_rect]
+    img_rect = rectifier.rectify(img)
+    img_crop = img_rect[0:h_rect, 0:w_rect]
     cv2.imshow('Rectified & Cropped', img_crop)
 
     print("Нажмите любую клавишу для выхода…")
