@@ -44,6 +44,7 @@ def main():
 if __name__ == '__main__':
     main()
 """
+"""
 import sys
 from pathlib import Path
 
@@ -90,4 +91,22 @@ def main():
 
 
 if __name__ == '__main__':
+    main()
+"""
+#!/usr/bin/env python3
+from pathlib import Path
+from src.synchronizer import Synchronizer
+
+def main():
+    # Указываем папку с unsynced+unrectified данными
+    ROOT = Path(__file__).resolve().parent.parent / "data" / "2011_09_28_drive_0034_extract"
+
+    # Создаём синхронизатор: камера лежит в папке "image_02", порог 0.01s
+    sync = Synchronizer(raw_root=ROOT, cam_folder="image_02")
+
+    matches = sync.sync()
+    print(f"Найдено совпадений (cam→velo→imu): {len(matches)}")
+    print("Первые 10 совпадений:", matches[:10])
+
+if __name__ == "__main__":
     main()
