@@ -39,7 +39,7 @@ def main():
 
     # 1) Полная синхронизация raw
     syncer = Synchronizer(raw_root=raw_root, cam_folder=cam_folder)
-    matches = syncer.sync()
+    matches = syncer.match_pairs()
     if not matches:
         print("Нет подходящих пар по timestamps.")
         sys.exit(1)

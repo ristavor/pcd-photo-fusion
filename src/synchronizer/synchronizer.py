@@ -1,52 +1,38 @@
-# sync.py
 from pathlib import Path
 from typing import List, Tuple
-import bisect
 import numpy as np
+
+from .loader import TimestampLoader
+from .matcher import TimeMatcher
 
 class Synchronizer:
     """
-    Синхронизирует timestamps камер и LiDAR-облаков по их файлам timestamps.txt в raw-данных.
-    Возвращает список (cam_idx, velo_idx) для всех пар, где |t_cam - t_velo| ≤ threshold.
+    Фасад: загружает временные метки, вычисляет threshold и
+    возвращает список синхронизованных пар (cam_idx, velo_idx).
     """
-    def __init__(self, raw_root: Path, cam_folder: str, threshold: float = None):
-        self.raw_root   = Path(raw_root)
+
+    def __init__(self, raw_root: Path, cam_folder: str,
+                 threshold: float = None):
+        """
+        :param raw_root:   корень каталога raw-данных
+        :param cam_folder: подпапка с изображениями, например "image_02"
+        :param threshold:  порог совпадения в секундах (если None — вычисляется автоматически)
+        """
+        self.raw_root = Path(raw_root)
         self.cam_folder = cam_folder
 
-        self.cam_ts  = self._load_camera_timestamps()
-        self.velo_ts = self._load_velo_timestamps()
+        loader = TimestampLoader(self.raw_root, cam_folder)
+        self.cam_times = loader.load_camera_timestamps()
+        self.velo_times = loader.load_velo_timestamps()
 
         if threshold is None:
-            dt_cam   = np.diff(self.cam_ts)
-            dt_velo  = np.diff(self.velo_ts)
-            self.threshold = 0.5 * min(np.median(dt_cam), np.median(dt_velo))
-        else:
-            self.threshold = threshold
+            dt_cam = np.diff(self.cam_times)
+            dt_velo = np.diff(self.velo_times)
+            threshold = 0.5 * min(float(np.median(dt_cam)), float(np.median(dt_velo)))
+        self.matcher = TimeMatcher(threshold)
 
-    def _to_seconds(self, timestr: str) -> float:
-        if ' ' in timestr:
-            _, timestr = timestr.split(' ', 1)
-        h, m, s = timestr.split(':')
-        return int(h)*3600 + int(m)*60 + float(s)
-
-    def _load_camera_timestamps(self) -> List[float]:
-        fn = self.raw_root / self.cam_folder / 'timestamps.txt'
-        with open(fn, 'r') as f:
-            return [self._to_seconds(l.strip()) for l in f if l.strip()]
-
-    def _load_velo_timestamps(self) -> List[float]:
-        fn = self.raw_root / 'velodyne_points' / 'timestamps.txt'
-        with open(fn, 'r') as f:
-            return [self._to_seconds(l.strip()) for l in f if l.strip()]
-
-    def sync(self) -> List[Tuple[int,int]]:
-        matches: List[Tuple[int,int]] = []
-        for cam_i, t_cam in enumerate(self.cam_ts):
-            j = bisect.bisect_left(self.velo_ts, t_cam)
-            cands = [c for c in (j-1, j, j+1) if 0 <= c < len(self.velo_ts)]
-            if not cands:
-                continue
-            best = min(cands, key=lambda c: abs(self.velo_ts[c] - t_cam))
-            if abs(self.velo_ts[best] - t_cam) <= self.threshold:
-                matches.append((cam_i, best))
-        return matches
+    def match_pairs(self) -> List[Tuple[int, int]]:
+        """
+        Выполняет синхронизацию и отбрасывает «плохие» кадры.
+        """
+        return self.matcher.match_pairs(self.cam_times, self.velo_times)
