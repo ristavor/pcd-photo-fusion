@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import List
 from .time_utils import parse_timestamp
+from functools import cached_property
 
 class TimestampLoader:
     """
@@ -11,10 +12,10 @@ class TimestampLoader:
         self.raw_root = Path(raw_root)
         self.cam_folder = cam_folder
 
-    def load_camera_timestamps(self) -> List[float]:
+    @cached_property
+    def camera_timestamps(self) -> List[float]:
         """
-        Читает файл raw_root/cam_folder/timestamps.txt
-        и возвращает список времён камер в секундах.
+        Загружает и кэширует список времён камер.
         """
         path = self.raw_root / self.cam_folder / 'timestamps.txt'
         if not path.exists():
@@ -23,10 +24,10 @@ class TimestampLoader:
             lines = [ln.strip() for ln in f if ln.strip()]
         return [parse_timestamp(ln) for ln in lines]
 
-    def load_velo_timestamps(self) -> List[float]:
+    @cached_property
+    def velo_timestamps(self) -> List[float]:
         """
-        Читает файл raw_root/velodyne_points/timestamps.txt
-        и возвращает список времён сканов LiDAR в секундах.
+        Загружает и кэширует список времён LiDAR.
         """
         path = self.raw_root / 'velodyne_points' / 'timestamps.txt'
         if not path.exists():
