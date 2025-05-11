@@ -6,6 +6,7 @@ from utils.constants import CANDIDATE_OFFSETS
 
 logger = logging.getLogger(__name__)
 
+
 class TimeMatcher:
     """
     Для каждого cam_time ищет ближайший velo_time в пределах threshold.
@@ -17,7 +18,7 @@ class TimeMatcher:
     def _get_candidate_indices(self,
                                cam_time: float,
                                velo_times: List[float]
-                              ) -> List[int]:
+                               ) -> List[int]:
         """
         1) Вычисляем позицию bisect
         2) Берём соседей по offsets (-1,0,1)
@@ -33,7 +34,7 @@ class TimeMatcher:
                                cam_time: float,
                                velo_times: List[float],
                                candidates: List[int]
-                              ) -> Optional[int]:
+                               ) -> Optional[int]:
         """
         Из списка кандидатов выбираем индекс с минимальным |Δt|.
         Вынесено, чтобы отделить логику выбора от логики проверки порога.
@@ -45,7 +46,7 @@ class TimeMatcher:
     def _within_threshold(self,
                           cam_time: float,
                           velo_time: float
-                         ) -> bool:
+                          ) -> bool:
         """
         Проверяет, что |velo_time - cam_time| ≤ threshold.
         Отдельный метод для прозрачности и возможного переопределения.
@@ -55,7 +56,7 @@ class TimeMatcher:
     def find_best(self,
                   cam_time: float,
                   velo_times: List[float]
-                 ) -> Optional[int]:
+                  ) -> Optional[int]:
         """
         Фасад:
           1) Получаем кандидатов
@@ -76,7 +77,7 @@ class TimeMatcher:
     def match_pairs(self,
                     cam_times: List[float],
                     velo_times: List[float]
-                   ) -> List[Tuple[int, int]]:
+                    ) -> List[Tuple[int, int]]:
         """
         Для каждого времени камеры возвращает пару (cam_idx, velo_idx),
         используя метод find_best.

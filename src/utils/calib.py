@@ -1,0 +1,86 @@
+# src/utils/calib.py
+
+from functools import lru_cache
+from typing import Dict, Tuple
+
+import numpy as np
+
+
+@lru_cache(maxsize=None)
+def read_cam_to_cam(path: str) -> Dict[str, np.ndarray]:
+    """
+    Считывает calib_cam_to_cam.txt в словарь:
+      ключи — части до ":",
+      значения — np.array из чисел.
+    Кешируется, чтобы файл читался лишь однажды.
+    """
+    data: Dict[str, np.ndarray] = {}
+    with open(path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or ':' not in line:
+                continue
+            key, vals = line.split(':', 1)
+            data[key.strip()] = np.fromstring(vals, sep=' ')
+    return data
+
+
+def read_velo_to_cam(path: str) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Считывает из calib_velo_to_cam.txt параметры R (3×3) и T (3,).
+    """
+    data: Dict[str, np.ndarray] = {}
+    with open(path, 'r') as f:
+        for line in f:
+            if ':' not in line:
+                continue
+            key, vals = line.split(':', 1)
+            data[key.strip()] = np.fromstring(vals, sep=' ')
+    R = data['R'].reshape(3, 3)
+    T = data['T']
+    return R, T
+
+
+def read_kitti_cam_calib(path: str, cam_idx: int
+                         ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Берёт из словаря calib_cam_to_cam.txt параметры камеры #cam_idx:
+      K       — (3×3) intrinsic,
+      D       — (5,)  distortion,
+      R_rect  — (3×3) rectification rotation,
+      P_rect  — (3×4) projection matrix.
+    """
+    d = read_cam_to_cam(path)
+    idx = f"{cam_idx:02d}"
+    try:
+        K = d[f"K_{idx}"].reshape(3, 3)
+        D = d[f"D_{idx}"]
+        R_rect = d[f"R_rect_{idx}"].reshape(3, 3)
+        P_rect = d[f"P_rect_{idx}"].reshape(3, 4)
+    except KeyError as e:
+        raise KeyError(f"Ключ {e.args[0]} не найден в {path}") from None
+    return K, D, R_rect, P_rect
+
+
+def get_full_image_size(path: str, cam_idx: int) -> Tuple[int, int]:
+    """
+    Возвращает (width, height) = S_0X из calib_cam_to_cam.txt
+    """
+    d = read_cam_to_cam(path)
+    idx = f"{cam_idx:02d}"
+    arr = d.get(f"S_{idx}")
+    if arr is None or arr.size < 2:
+        raise KeyError(f"S_{idx} отсутствует в {path}")
+    return int(arr[0]), int(arr[1])
+
+
+def get_rectified_size(path: str, cam_idx: int) -> Tuple[int, int]:
+    """
+    Возвращает (width, height) = S_rect_0X из calib_cam_to_cam.txt
+    """
+    d = read_cam_to_cam(path)
+    idx = f"{cam_idx:02d}"
+    arr = d.get(f"S_rect_{idx}")
+    if arr is None or arr.size < 2:
+        raise KeyError(f"S_rect_{idx} отсутствует в {path}")
+    return int(arr[0]), int(arr[1])

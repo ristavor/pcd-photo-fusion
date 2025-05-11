@@ -1,14 +1,16 @@
 # main.py
-#!/usr/bin/env python3
+# !/usr/bin/env python3
 import sys
+from pathlib import Path
+
 import cv2
 import numpy as np
 import open3d as o3d
-from pathlib import Path
 
-from synchronizer import Synchronizer
-from rectifier import ImageRectifier
 from colorizer import read_velo_to_cam, Colorizer
+from rectifier import ImageRectifier
+from synchronizer import Synchronizer
+
 
 def load_velo(path: Path) -> np.ndarray:
     """.bin через fromfile, .txt через loadtxt. Возвращает N×3 XYZ."""
@@ -24,6 +26,7 @@ def load_velo(path: Path) -> np.ndarray:
     else:
         raise ValueError(f"Unsupported extension: {path.suffix}")
 
+
 def color_and_show(img: np.ndarray, pts: np.ndarray, window_name: str, colorizer: Colorizer):
     pcd = colorizer.colorize(pts, img)
     vis = o3d.visualization.Visualizer()
@@ -31,10 +34,11 @@ def color_and_show(img: np.ndarray, pts: np.ndarray, window_name: str, colorizer
     vis.add_geometry(pcd)
     return vis
 
+
 def main():
-    base       = Path(__file__).resolve().parent.parent
-    raw_root   = base / "data" / "2011_09_28_drive_0034_extract"
-    sync_root  = base / "data" / "2011_09_28_drive_0034_sync"
+    base = Path(__file__).resolve().parent.parent
+    raw_root = base / "data" / "2011_09_28_drive_0034_extract"
+    sync_root = base / "data" / "2011_09_28_drive_0034_sync"
     cam_folder = "image_02"
 
     # 1) Полная синхронизация raw
@@ -59,29 +63,31 @@ def main():
 
     # 4) Подготовка colorizer
     calib_dir = base / "data" / "2011_09_28_calib"
-    R, T      = read_velo_to_cam(calib_dir / "calib_velo_to_cam.txt")
+    R, T = read_velo_to_cam(calib_dir / "calib_velo_to_cam.txt")
 
     # 5) Обработка raw-пары
     raw_cam_idx, raw_velo_idx = matches[raw_choice]
     # load & rectify image
     img_raw = cv2.imread(str(raw_root / cam_folder / "data" / f"{raw_cam_idx:010d}.png"), cv2.IMREAD_UNCHANGED)
-    rectifier = ImageRectifier(calib_cam_path=calib_dir/"calib_cam_to_cam.txt", cam_idx=int(cam_folder.split('_')[-1]))
+    rectifier = ImageRectifier(calib_cam_path=calib_dir / "calib_cam_to_cam.txt",
+                               cam_idx=int(cam_folder.split('_')[-1]))
     img_raw_rect = rectifier.rectify(img_raw)
     # load velo
-    velo_raw = load_velo(raw_root/"velodyne_points"/"data"/f"{raw_velo_idx:010d}.txt")
+    velo_raw = load_velo(raw_root / "velodyne_points" / "data" / f"{raw_velo_idx:010d}.txt")
 
     # 6) Обработка sync-пары
-    sync_cam_idx  = sync_choice
+    sync_cam_idx = sync_choice
     sync_velo_idx = sync_choice
-    img_sync = cv2.imread(str(sync_root/cam_folder/"data"/f"{sync_cam_idx:010d}.png"), cv2.IMREAD_UNCHANGED)
-    velo_sync = load_velo(sync_root/"velodyne_points"/"data"/f"{sync_velo_idx:010d}.bin")
+    img_sync = cv2.imread(str(sync_root / cam_folder / "data" / f"{sync_cam_idx:010d}.png"), cv2.IMREAD_UNCHANGED)
+    velo_sync = load_velo(sync_root / "velodyne_points" / "data" / f"{sync_velo_idx:010d}.bin")
 
     # 7) Colorizer (используем одну и ту же матрицу K для raw и sync)
     colorizer = Colorizer(R, T, rectifier.P_new)
 
     # 8) Визуализация
-    vis_raw  = color_and_show(img_raw_rect, np.asarray(velo_raw),  f"RAW idx={raw_choice} ({raw_cam_idx}-{raw_velo_idx})", colorizer)
-    vis_sync = color_and_show(img_sync,      np.asarray(velo_sync), f"SYNC idx={sync_choice}", colorizer)
+    vis_raw = color_and_show(img_raw_rect, np.asarray(velo_raw), f"RAW idx={raw_choice} ({raw_cam_idx}-{raw_velo_idx})",
+                             colorizer)
+    vis_sync = color_and_show(img_sync, np.asarray(velo_sync), f"SYNC idx={sync_choice}", colorizer)
 
     try:
         while True:
@@ -89,14 +95,17 @@ def main():
             cv2.imshow("SYNC image", img_sync)
             if cv2.waitKey(1) == 27:
                 break
-            vis_raw.poll_events();  vis_raw.update_renderer()
-            vis_sync.poll_events(); vis_sync.update_renderer()
+            vis_raw.poll_events();
+            vis_raw.update_renderer()
+            vis_sync.poll_events();
+            vis_sync.update_renderer()
     except KeyboardInterrupt:
         pass
     finally:
         vis_raw.destroy_window()
         vis_sync.destroy_window()
         cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()

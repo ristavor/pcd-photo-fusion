@@ -1,10 +1,10 @@
 # src/synchronizer/time_utils.py
-from typing import Final
 import logging
 
 from utils.constants import EPS_SECONDS
 
 logger = logging.getLogger(__name__)
+
 
 def parse_timestamp(line: str) -> float:
     """
@@ -20,7 +20,7 @@ def parse_timestamp(line: str) -> float:
         raise ValueError(f"Неправильный формат времени: '{line}'")
     h, m, sec = parts
     try:
-        total = int(h)*3600 + int(m)*60 + float(sec)
+        total = int(h) * 3600 + int(m) * 60 + float(sec)
     except Exception as e:
         raise ValueError(f"Ошибка парсинга '{line}': {e}") from e
     # Защита от нуля/отрицательных
