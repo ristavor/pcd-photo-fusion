@@ -1,15 +1,19 @@
+# File: calibration/roi_selector.py
+
 import numpy as np
 import cv2
 import open3d as o3d
 from pathlib import Path
 from utils.calib import read_kitti_cam_calib, read_velo_to_cam
 
-SPHERE_RADIUS_FACTOR = 0.001
+SPHERE_RADIUS_FACTOR = 0.0001
 
 def detect_image_corners(image: np.ndarray, pattern_size=(7,5)) -> np.ndarray:
+    """
+    Автоматически находит все внутренние углы шахматной доски в image.
+    Возвращает массив shape (N,2) с пиксельными координатами.
+    """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    gray = clahe.apply(gray)
     found, corners = cv2.findChessboardCorners(
         gray, pattern_size,
         flags=cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
@@ -24,16 +28,19 @@ def detect_image_corners(image: np.ndarray, pattern_size=(7,5)) -> np.ndarray:
 
 
 def load_point_cloud(path: str) -> o3d.geometry.PointCloud:
+    """
+    Загружает облако точек из .pcd/.ply/.bin/.txt.
+    """
     p = Path(path)
     ext = p.suffix.lower()
     if ext in ('.pcd', '.ply'):
         pcd = o3d.io.read_point_cloud(str(p))
     elif ext == '.bin':
-        data = np.fromfile(str(p), dtype=np.float32)
+        data = np.fromfile(str(p), np.float32)
         pts = data.reshape(-1,4)[:, :3]
         pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts))
     elif ext == '.txt':
-        data = np.loadtxt(str(p), dtype=np.float32)
+        data = np.loadtxt(str(p), np.float32)
         if data.ndim == 1:
             data = data.reshape(1, -1)
         pts = data[:, :3]
@@ -45,113 +52,128 @@ def load_point_cloud(path: str) -> o3d.geometry.PointCloud:
     return pcd
 
 
-def detect_board_plane(
+def select_pointcloud_roi(
     pcd: o3d.geometry.PointCloud,
-    pattern_size=(7,5),
-    square_size=0.10,
-    dist_thresh=0.005,
-    visualize: bool = False
-) -> tuple[list[float], o3d.geometry.PointCloud]:
+    sphere_radius: float = None
+) -> list[int]:
     """
-    Сегментирует плоскость и из её inliers выделяет единственный кластер доски.
-    visualize=True отрисует board_cloud поверх серого pcd.
+    Интерактивный выбор точек LiDAR-облака, принадлежащих шахматной доске.
+    F + ЛКМ — переключить точку (добавить/снять);
+    Q — закончить выбор.
+    Возвращает список индексов выбранных точек.
     """
-    # 1) общая RANSAC-плоскость
-    plane_model, inliers = pcd.segment_plane(
-        distance_threshold=dist_thresh,
-        ransac_n=3,
-        num_iterations=1000
-    )
-    inlier_cloud = pcd.select_by_index(inliers)
+    import open3d.visualization.gui as gui
+    import open3d.visualization.rendering as rendering
 
-    # 2) кластеризация inlier_cloud
-    labels = np.array(
-        inlier_cloud.cluster_dbscan(eps=0.02, min_points=50, print_progress=False)
-    )
-    max_label = labels.max()
-    rows, cols = pattern_size
-    expected_dims = sorted([ (cols-1)*square_size, (rows-1)*square_size ])
-    tol = max(expected_dims) * 0.2
+    app = gui.Application.instance
+    app.initialize()
+    window = app.create_window("3D: F+LMB — pick/unpick, Q — finish", 800, 600)
+    scene = gui.SceneWidget()
+    scene.scene = rendering.Open3DScene(window.renderer)
+    window.add_child(scene)
 
-    board_cloud = inlier_cloud  # по умолчанию
-    for lbl in range(max_label + 1):
-        idx = np.where(labels==lbl)[0]
-        cluster = inlier_cloud.select_by_index(idx)
-        obb = cluster.get_oriented_bounding_box()
-        dims = sorted(obb.extent[:2])
-        if abs(dims[0] - expected_dims[0]) < tol and abs(dims[1] - expected_dims[1]) < tol:
-            board_cloud = cluster
-            break
+    # базовое облако
+    mat_base = rendering.MaterialRecord()
+    mat_base.shader = "defaultUnlit"
+    scene.scene.add_geometry("pcd", pcd, mat_base)
 
-    # 3) визуализация для проверки
-    if visualize:
-        pcd.paint_uniform_color([0.7,0.7,0.7])
-        board_cloud.paint_uniform_color([1.0,0.0,0.0])
-        o3d.visualization.draw_geometries(
-            [pcd, board_cloud],
-            window_name="Gray: весь LiDAR, Red: предполагаемая доска"
-        )
+    # камера
+    bbox = pcd.get_axis_aligned_bounding_box()
+    scene.setup_camera(60.0, bbox, bbox.get_center())
 
-    return plane_model, board_cloud
+    # сферы для выбранных точек
+    if sphere_radius is None:
+        diag = np.linalg.norm(np.asarray(bbox.get_max_bound()) - np.asarray(bbox.get_min_bound()))
+        sphere_radius = diag * SPHERE_RADIUS_FACTOR
+    mat_sphere = rendering.MaterialRecord()
+    mat_sphere.shader = "defaultLit"
+    mat_sphere.base_color = (1.0, 0.0, 0.0, 1.0)
+
+    flann = o3d.geometry.KDTreeFlann(pcd)
+    picking = False
+    selected_idx = set()
+    sphere_names = set()
+
+    def update_spheres():
+        for name in sphere_names:
+            scene.scene.remove_geometry(name)
+        sphere_names.clear()
+        pts = np.asarray(pcd.points)
+        for i in selected_idx:
+            center = pts[i]
+            sph = o3d.geometry.TriangleMesh.create_sphere(radius=sphere_radius)
+            sph.compute_vertex_normals()
+            sph.translate(center)
+            name = f"sel_sph_{i}"
+            scene.scene.add_geometry(name, sph, mat_sphere)
+            sphere_names.add(name)
+
+    def on_key(ev: gui.KeyEvent) -> bool:
+        nonlocal picking
+        if ev.type == gui.KeyEvent.Type.DOWN:
+            if ev.key == gui.KeyName.F:
+                picking = True
+                return True
+            if ev.key == gui.KeyName.Q:
+                window.close()
+                return True
+        if ev.type == gui.KeyEvent.Type.UP and ev.key == gui.KeyName.F:
+            picking = False
+            return True
+        return False
+
+    window.set_on_key(on_key)
+
+    def on_mouse(ev: gui.MouseEvent) -> bool:
+        if not (picking
+                and ev.type == gui.MouseEvent.Type.BUTTON_DOWN
+                and ev.is_button_down(gui.MouseButton.LEFT)):
+            return False
+
+        x = ev.x - scene.frame.x
+        y = ev.y - scene.frame.y
+        if not (0 <= x < scene.frame.width and 0 <= y < scene.frame.height):
+            return False
+
+        def depth_cb(depth_image):
+            d = np.asarray(depth_image)[y, x]
+            if d >= 1.0:
+                return
+            world = scene.scene.camera.unproject(
+                x, y, d,
+                scene.frame.width, scene.frame.height)
+            _, idx, _ = flann.search_knn_vector_3d(world, 1)
+            i0 = idx[0]
+            if i0 in selected_idx:
+                selected_idx.remove(i0)
+            else:
+                selected_idx.add(i0)
+            update_spheres()
+
+        scene.scene.scene.render_to_depth_image(depth_cb)
+        return True
+
+    scene.set_on_mouse(on_mouse)
+
+    app.run()
+    return list(selected_idx)
 
 
-def generate_board_corners_3d(
-    plane_cloud: o3d.geometry.PointCloud,
-    pattern_size=(7,5),
-    square_size=0.10
-) -> np.ndarray:
-    pts = np.asarray(plane_cloud.points)
-    mean = pts.mean(axis=0)
-    cov = np.cov(pts - mean, rowvar=False)
-    eigvals, eigvecs = np.linalg.eigh(cov)
-    axes = eigvecs[:, np.argsort(-eigvals)[:2]]
-    x_axis = axes[:,0] / np.linalg.norm(axes[:,0])
-    y_axis = axes[:,1] / np.linalg.norm(axes[:,1])
-    origin = mean
-
-    rows, cols = pattern_size
-    corners3d = []
-    for i in range(rows):
-        for j in range(cols):
-            pt = origin + j*square_size*x_axis + i*square_size*y_axis
-            corners3d.append(pt)
-    return np.array(corners3d, dtype=np.float32)
-
-
-def load_camera_params(calib_cam_path: str, cam_idx: int):
-    K, D, R_rect, P_rect = read_kitti_cam_calib(calib_cam_path, cam_idx)
-    velo_path = Path(calib_cam_path).with_name('calib_velo_to_cam.txt')
-    Rv2c, Tv2c = read_velo_to_cam(str(velo_path))
-    Tr = np.hstack([Rv2c, Tv2c.reshape(3,1)])
-    return K, D, R_rect, P_rect, Tr
-
-
-def compute_extrinsics(
-    img_pts: np.ndarray,
-    obj_pts: np.ndarray,
-    K: np.ndarray,
-    D: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, list[int]]:
-    obj = obj_pts.reshape(-1,1,3)
-    img = img_pts.reshape(-1,1,2)
-    success, rvec, tvec, inliers = cv2.solvePnPRansac(
-        objectPoints=obj, imagePoints=img,
-        cameraMatrix=K, distCoeffs=D,
-        flags=cv2.SOLVEPNP_EPNP,
-        reprojectionError=2.0, confidence=0.99, iterationsCount=100
-    )
-    if not success:
-        raise RuntimeError("[ROI_SELECTOR] EPnP + RANSAC не сошёлся")
-
-    idx = inliers.flatten().tolist()
-    obj_in = obj_pts[idx].reshape(-1,1,3)
-    img_in = img_pts[idx].reshape(-1,1,2)
-    rvec_ref, tvec_ref = cv2.solvePnPRefineLM(
-        objectPoints=obj_in, imagePoints=img_in,
-        cameraMatrix=K, distCoeffs=D,
-        rvec=rvec, tvec=tvec
-    )
-
-    R, _ = cv2.Rodrigues(rvec_ref)
-    T = tvec_ref.flatten()
-    return R, T, idx
+def extract_roi_cloud(
+    pcd: o3d.geometry.PointCloud,
+    indices: list[int],
+    expand: float = 0.01
+) -> tuple[o3d.geometry.PointCloud, o3d.geometry.OrientedBoundingBox]:
+    """
+    Строит OrientedBoundingBox по точкам indices и обрезает pcd.
+    expand — добавить рамке небольшой запас (м).
+    Возвращает (cropped_cloud, obb).
+    """
+    pts = np.asarray(pcd.points)[indices]
+    obb = o3d.geometry.OrientedBoundingBox.create_from_points(
+        o3d.utility.Vector3dVector(pts))
+    old_ext = obb.extent
+    new_ext = old_ext + np.array([expand, expand, expand], dtype=old_ext.dtype)
+    obb = o3d.geometry.OrientedBoundingBox(obb.center, obb.R, new_ext)
+    cropped = pcd.crop(obb)
+    return cropped, obb
