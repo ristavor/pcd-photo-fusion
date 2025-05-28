@@ -61,6 +61,8 @@ class ImageRectifier:
         """
         Undistort + rectify + crop.
         """
+        if img.ndim == 2:
+            img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         assert isinstance(img, np.ndarray) and img.ndim == 3 and img.shape[2] in (3, 4), \
             "img must be H×W×3 or H×W×4 BGR image"
         map1, map2 = self._remap_map
