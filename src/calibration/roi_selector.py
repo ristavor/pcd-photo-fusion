@@ -1,5 +1,7 @@
 # File: calibration/roi_selector.py
 
+# File: calibration/roi_selector.py
+
 import numpy as np
 import cv2
 import open3d as o3d
@@ -10,29 +12,32 @@ SPHERE_RADIUS_FACTOR = 0.0001
 
 def detect_image_corners(image: np.ndarray, pattern_size=(7,5)) -> np.ndarray:
     """
-    Автоматически находит все внутренние углы шахматной доски в image.
-    Возвращает массив shape (N,2) с пиксельными координатами.
+    Автоматически находит и уточняет субпиксельно
+    все внутренние углы шахматной доски в image.
+    Возвращает ndarray shape (N,2) — пиксельные координаты.
     """
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     found, corners = cv2.findChessboardCorners(
         gray, pattern_size,
-        flags=cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
+        flags=cv2.CALIB_CB_ADAPTIVE_THRESH
+              | cv2.CALIB_CB_NORMALIZE_IMAGE
     )
     if not found:
         raise RuntimeError(f"[ROI_SELECTOR] Не удалось найти {pattern_size} углов")
     cv2.cornerSubPix(
-        gray, corners, winSize=(11,11), zeroZone=(-1,-1),
-        criteria=(cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_COUNT, 30, 0.1)
+        gray, corners,
+        winSize=(11,11), zeroZone=(-1,-1),
+        criteria=(cv2.TERM_CRITERIA_EPS
+                  + cv2.TERM_CRITERIA_COUNT, 30, 0.1)
     )
     return corners.reshape(-1,2).astype(np.float32)
 
 
 def load_point_cloud(path: str) -> o3d.geometry.PointCloud:
     """
-    Загружает облако точек из .pcd/.ply/.bin/.txt.
+    Загружает облако точек из .pcd/.ply/.bin/.txt
     """
-    p = Path(path)
-    ext = p.suffix.lower()
+    p = Path(path); ext = p.suffix.lower()
     if ext in ('.pcd', '.ply'):
         pcd = o3d.io.read_point_cloud(str(p))
     elif ext == '.bin':
@@ -41,8 +46,7 @@ def load_point_cloud(path: str) -> o3d.geometry.PointCloud:
         pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts))
     elif ext == '.txt':
         data = np.loadtxt(str(p), np.float32)
-        if data.ndim == 1:
-            data = data.reshape(1, -1)
+        if data.ndim == 1: data = data.reshape(1,-1)
         pts = data[:, :3]
         pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts))
     else:
@@ -72,16 +76,13 @@ def select_pointcloud_roi(
     scene.scene = rendering.Open3DScene(window.renderer)
     window.add_child(scene)
 
-    # базовое облако
     mat_base = rendering.MaterialRecord()
     mat_base.shader = "defaultUnlit"
     scene.scene.add_geometry("pcd", pcd, mat_base)
 
-    # камера
     bbox = pcd.get_axis_aligned_bounding_box()
     scene.setup_camera(60.0, bbox, bbox.get_center())
 
-    # сферы для выбранных точек
     if sphere_radius is None:
         diag = np.linalg.norm(np.asarray(bbox.get_max_bound()) - np.asarray(bbox.get_min_bound()))
         sphere_radius = diag * SPHERE_RADIUS_FACTOR
@@ -129,7 +130,6 @@ def select_pointcloud_roi(
                 and ev.type == gui.MouseEvent.Type.BUTTON_DOWN
                 and ev.is_button_down(gui.MouseButton.LEFT)):
             return False
-
         x = ev.x - scene.frame.x
         y = ev.y - scene.frame.y
         if not (0 <= x < scene.frame.width and 0 <= y < scene.frame.height):
@@ -154,7 +154,6 @@ def select_pointcloud_roi(
         return True
 
     scene.set_on_mouse(on_mouse)
-
     app.run()
     return list(selected_idx)
 
@@ -177,3 +176,18 @@ def extract_roi_cloud(
     obb = o3d.geometry.OrientedBoundingBox(obb.center, obb.R, new_ext)
     cropped = pcd.crop(obb)
     return cropped, obb
+
+
+def load_camera_params(calib_cam_path: str, cam_idx: int):
+    """
+    Читает из calib_cam_to_cam.txt:
+      - K (3×3) intrinsic,
+      - D (5,) distortion,
+    и из calib_velo_to_cam.txt:
+      - Tr_velo_to_cam (3×4).
+    """
+    K, D, R_rect, P_rect = read_kitti_cam_calib(calib_cam_path, cam_idx)
+    velo_path = Path(calib_cam_path).with_name('calib_velo_to_cam.txt')
+    Rv2c, Tv2c = read_velo_to_cam(str(velo_path))
+    Tr = np.hstack([Rv2c, Tv2c.reshape(3,1)])
+    return K.astype(np.float32), D.astype(np.float32), R_rect, P_rect, Tr
