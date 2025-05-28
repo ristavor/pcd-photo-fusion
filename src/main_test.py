@@ -13,7 +13,8 @@ from calibration.roi_selector import (
     extract_roi_cloud,
     load_camera_params,
     compute_board_frame,
-    generate_object_points
+    generate_object_points,
+    compute_extrinsics
 )
 
 def adjust_corners_interactively(img, corners, pattern):
@@ -153,6 +154,24 @@ def main():
     vis2.run()
     vis2.destroy_window()
     print("Step 8 complete: ideal 3D corners generated and visualized.")
+    # 9) Решаем PnP: получаем R и T
+    K, D, Tr_gt = load_camera_params(args.calib, args.camidx)
+    print("\n--- Solving EPnP + LM-refine PnP ---")
+    R_est, T_est, inliers = compute_extrinsics(
+        corners2d,
+        corners3d,
+        K, D
+    )
+    print("Estimated R:\n", R_est)
+    print("Estimated T:\n", T_est)
+    print(f"Inliers: {len(inliers)} / {len(corners3d)}")
+    print("Ground truth Tr_velo_to_cam:\n", Tr_gt)
+    # (опционально) собрать в 3×4 матрицу для сравнения
+    Tr_est = np.hstack([R_est, T_est.reshape(3, 1)])
+    print("Estimated Tr (3×4):\n", Tr_est)
+    diff = Tr_est - Tr_gt
+    print("Difference Tr_est - Tr_gt:\n", diff)
+    print("Norm of difference:", np.linalg.norm(diff))
 
 
 if __name__=="__main__":

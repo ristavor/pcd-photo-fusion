@@ -175,23 +175,76 @@ def compute_board_frame(
         normal=-normal
     return origin, x_axis, y_axis, normal
 
+
 def generate_object_points(
-    origin: np.ndarray,
-    x_axis: np.ndarray,
-    y_axis: np.ndarray,
-    pattern_size: tuple[int, int],
-    square_size: float
+        origin: np.ndarray,
+        x_axis: np.ndarray,
+        y_axis: np.ndarray,
+        pattern_size: tuple[int, int],
+        square_size: float
 ) -> np.ndarray:
     """
     Генерирует идеальные 3D-координаты внутренних углов доски
-    в локальной системе LiDAR.
     pattern_size = (cols, rows), square_size — длина клетки в м.
     Возвращает ndarray shape (N,3).
     """
     cols, rows = pattern_size
     pts3d = []
-    for i in range(cols):
-        for j in range(rows):
-            pt = origin + i * square_size * x_axis + j * square_size * y_axis
+    # OpenCV corners идут в порядке row-major: сначала по j (rows), потом по i (cols)
+    for j in range(rows):  # сначала строки (y-ось)
+        for i in range(cols):  # внутри строки — столбцы (x-ось)
+            pt = (origin
+                  + i * square_size * x_axis
+                  + j * square_size * y_axis)
             pts3d.append(pt)
-    return np.array(pts3d, dtype=np.float32)
+    pts3d = np.array(pts3d, dtype=np.float32)
+    # DEBUG: убедимся, что точек ровно cols*rows
+    assert pts3d.shape[0] == cols * rows, \
+        f"Expected {cols*rows} points, got {pts3d.shape[0]}"
+    return pts3d
+
+def compute_extrinsics(
+    img_pts: np.ndarray,
+    obj_pts: np.ndarray,
+    K:       np.ndarray,
+    D:       np.ndarray
+) -> tuple[np.ndarray, np.ndarray, list[int]]:
+    """
+    EPnP + RANSAC, затем LM-уточнение.
+    Возвращает (R, T, inlier_indices).
+    """
+    # приводим к нужному виду
+    obj = obj_pts.reshape(-1,1,3)
+    img = img_pts.reshape(-1,1,2)
+
+    # 1) EPnP + RANSAC
+    success, rvec, tvec, inliers = cv2.solvePnPRansac(
+        objectPoints   = obj,
+        imagePoints    = img,
+        cameraMatrix   = K,
+        distCoeffs     = D,
+        flags          = cv2.SOLVEPNP_EPNP,
+        reprojectionError = 2.0,
+        confidence        = 0.99,
+        iterationsCount   = 100
+    )
+    if not success:
+        raise RuntimeError("[ROI_SELECTOR] EPnP+RANSAC не сошёлся")
+
+    inlier_idx = inliers.flatten().tolist()
+
+    # 2) LM-уточнение по найденным inliers
+    obj_in = obj_pts[inlier_idx].reshape(-1,1,3)
+    img_in = img_pts[inlier_idx].reshape(-1,1,2)
+    rvec_ref, tvec_ref = cv2.solvePnPRefineLM(
+        objectPoints = obj_in,
+        imagePoints  = img_in,
+        cameraMatrix = K,
+        distCoeffs   = D,
+        rvec         = rvec,
+        tvec         = tvec
+    )
+
+    R, _ = cv2.Rodrigues(rvec_ref)
+    T     = tvec_ref.flatten()
+    return R, T, inlier_idx
