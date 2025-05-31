@@ -1,178 +1,226 @@
-#!/usr/bin/env python3
-# File: src/main_test.py
+# main_test.py
 
+#!/usr/bin/env python3
 import argparse
 import cv2
 import numpy as np
 import open3d as o3d
+from scipy.optimize import least_squares
 
-from calibration.roi_selector import (
+from calibration.image_corners import (
     detect_image_corners,
+    adjust_corners_interactively
+)
+from calibration.pcd_roi import (
     load_point_cloud,
     select_pointcloud_roi,
-    extract_roi_cloud,
-    load_camera_params,
+    extract_roi_cloud
+)
+from calibration.board_geometry import (
     compute_board_frame,
     generate_object_points,
-    compute_extrinsics
+    refine_3d_corners
 )
+from calibration.calib_io import (
+    load_camera_params,
+    compute_axes_transform
+)
+from calibration.viz_utils import reproject_and_show
 
-def adjust_corners_interactively(img, corners, pattern):
+
+def rotation_error_deg(R_est: np.ndarray, R_gt: np.ndarray) -> float:
     """
-    Drag&drop любого кружка:
-      ЛКМ→захват, MOVE→движение, отпуск ЛКМ→финиш,
-      Enter→окончательно.
+    Угол между двумя матрицами вращения в градусах.
     """
-    win="Adjust corners"
-    selected=-1; dragging=False; R=10
-    cv2.namedWindow(win)
-    def on_mouse(ev,x,y,flags,_):
-        nonlocal selected,dragging,corners
-        if ev==cv2.EVENT_LBUTTONDOWN:
-            for i,(cx,cy) in enumerate(corners):
-                if (x-cx)**2+(y-cy)**2<R*R:
-                    selected=i; dragging=True; break
-        elif ev==cv2.EVENT_MOUSEMOVE and dragging:
-            corners[selected]=[x,y]
-        elif ev==cv2.EVENT_LBUTTONUP and dragging:
-            dragging=False; selected=-1
-    cv2.setMouseCallback(win,on_mouse)
-    while True:
-        vis=img.copy()
-        cv2.drawChessboardCorners(vis,pattern,corners.reshape(-1,1,2),True)
-        cv2.imshow(win,vis)
-        if cv2.waitKey(20) in (10,13): break
-    cv2.destroyWindow(win)
-    return corners
+    R = R_est @ R_gt.T
+    cos_val = (np.trace(R) - 1) / 2
+    cos_val = np.clip(cos_val, -1.0, 1.0)
+    return np.degrees(np.arccos(cos_val))
+
+
+def refine_r_only(
+    pts3d: np.ndarray,
+    pts2d: np.ndarray,
+    K: np.ndarray,
+    D: np.ndarray,
+    rvec0: np.ndarray,
+    T_gt: np.ndarray
+) -> np.ndarray:
+    """
+    LM-оптимизация только rvec, при фиксированном T_gt.
+    Возвращает уточнённый rvec (3×1).
+    """
+    def residuals(r):
+        r = r.reshape(3, 1)
+        proj, _ = cv2.projectPoints(
+            pts3d.reshape(-1, 1, 3),
+            r,
+            T_gt.reshape(3, 1),
+            K,
+            D
+        )
+        return (proj.reshape(-1, 2) - pts2d).reshape(-1)
+
+    x0 = rvec0.flatten()
+    sol = least_squares(residuals, x0, method='lm')
+    return sol.x.reshape(3, 1)
+
+
+def debug_pnp_axes(
+    corners2d: np.ndarray,
+    origin: np.ndarray,
+    x_axis: np.ndarray,
+    y_axis: np.ndarray,
+    pattern: tuple[int, int],
+    square_size: float,
+    K: np.ndarray,
+    D: np.ndarray,
+    R_gt: np.ndarray,
+    T_gt: np.ndarray
+):
+    """
+    Перебирает 8 возможных конфигураций ориентации доски (±x, ±y, swap),
+    выводит для каждой reproj-ошибку по углу и погрешность T (хоть T фиксирован),
+    сортирует по наименьшей rot-погрешности, печатает все варианты.
+    """
+    cols, rows = pattern
+    specs = []
+    for swap in (False, True):
+        for sx in (1, -1):
+            for sy in (1, -1):
+                name = f"{'swap,' if swap else ''}{'+' if sx>0 else '-'}x,{'+' if sy>0 else '-'}y"
+                specs.append((swap, sx, sy, name))
+
+    results = []
+    for swap, sx, sy, name in specs:
+        # задаём ориентированные оси
+        if swap:
+            xa = y_axis * sx
+            ya = x_axis * sy
+        else:
+            xa = x_axis * sx
+            ya = y_axis * sy
+
+        # генерируем 3D-точки углов шахматки
+        pts3d = generate_object_points(origin, xa, ya, pattern, square_size)
+        # при желании можно уточнить 3D-координаты углов:
+        # pts3d = refine_3d_corners(pts3d, board_cloud, k=10)
+
+        # PnP (iterative) без догадки (rvec0=0,tvec0=0)
+        ok, rvec, tvec = cv2.solvePnP(
+            objectPoints=pts3d.reshape(-1, 1, 3),
+            imagePoints=corners2d.reshape(-1, 1, 2),
+            cameraMatrix=K,
+            distCoeffs=D,
+            flags=cv2.SOLVEPNP_ITERATIVE
+        )
+        if not ok:
+            continue
+
+        # уточняем только rvec, T_gt фиксировано
+        rvec_ref = refine_r_only(
+            pts3d, corners2d, K, D,
+            rvec.reshape(3, 1),
+            T_gt
+        )
+        R_est = cv2.Rodrigues(rvec_ref)[0]
+        T_est = T_gt.flatten()
+
+        err_deg = rotation_error_deg(R_est, R_gt)
+        t_err = np.linalg.norm(T_est - T_gt.flatten())
+
+        results.append((name, err_deg, t_err, R_est, T_est))
+
+    # сортируем по углу (меньше лучше), затем по T‐ошибке (что всегда =0 здесь)
+    results.sort(key=lambda x: (x[1], x[2]))
+
+    print("\n--- Варианты (название, угол_ошибки°, ΔT_норма) ---")
+    for name, e_deg, te, rmat, tvec in results:
+        print(f"{name:12s}  err_rot={e_deg:6.2f}°  err_t={te:5.3f}m\n{rmat}\n{tvec}\n")
+    best = results[0]
+    print(f">> Лучший вариант: {best[0]}  → err_rot={best[1]:.2f}°, err_t={best[2]:.3f}m\n")
+    return results
+
 
 def main():
-    p=argparse.ArgumentParser()
-    p.add_argument("-i","--image", required=True)
-    p.add_argument("-p","--pcd",   required=True)
-    p.add_argument("-c","--calib", required=True)
-    p.add_argument("-k","--camidx",type=int,default=0)
-    p.add_argument("--pattern",nargs=2,type=int,default=[7,5])
-    args=p.parse_args()
-
-    # 1) ROI на изображении
-    img=cv2.imread(args.image)
-    cols,rows=args.pattern; pattern=(cols,rows)
-    print("Select ROI → ENTER")
-    x,y,w,h=map(int,cv2.selectROI("ROI image",img))
-    cv2.destroyWindow("ROI image")
-    img_roi=img[y:y+h, x:x+w]
-
-    # 2) Авто-детект 2D-углов
-    print("Auto-detect corners")
-    corners_roi=detect_image_corners(img_roi,pattern)
-    corners2d=corners_roi+np.array([x,y],dtype=np.float32)
-
-    # 3) Ручная правка
-    print("Adjust corners → ENTER")
-    corners2d=adjust_corners_interactively(img,corners2d,pattern)
-
-    # 4) Финальный read-only вывод кружков
-    vis=img.copy()
-    cv2.rectangle(vis,(x,y),(x+w,y+h),(0,255,0),2)
-    cv2.drawChessboardCorners(vis,pattern,corners2d.reshape(-1,1,2),True)
-    cv2.imshow("Final corners",vis)
-    print("OK? any key → continue")
-    cv2.waitKey(0); cv2.destroyAllWindows()
-
-    # 5) ROI в облаке
-    print("Select cloud ROI: F+LMB pick/unpick, Q finish")
-    pcd=load_point_cloud(args.pcd)
-    ids=select_pointcloud_roi(pcd)
-    if not ids:
-        print("No points — abort"); return
-    board_roi, obb = extract_roi_cloud(pcd, ids, expand=0.001)
-
-    # 6) Локальная СК доски
-    origin, x_axis, y_axis, normal = compute_board_frame(board_roi)
-    print("Board frame:",origin, x_axis, y_axis, normal)
-
-    # 7) Визуализация облака + ROI + оси
-    # OBB каркас
-    obb_ls=o3d.geometry.LineSet.create_from_oriented_bounding_box(obb)
-    obb_ls.paint_uniform_color([0,1,0])
-    # оси
-    pts=[origin,
-         origin+x_axis*0.2,
-         origin+y_axis*0.2,
-         origin+normal*0.2]
-    pts = [
-        origin,
-        origin + x_axis * 0.2,  # X-ось
-        origin + y_axis * 0.2,  # Y-ось
-        origin + normal * 0.2  # Z-ось
-    ]
-    axes = o3d.geometry.LineSet(
-        points=o3d.utility.Vector3dVector(pts),
-        lines=o3d.utility.Vector2iVector([[0, 1], [0, 2], [0, 3]])
+    parser = argparse.ArgumentParser(
+        description="Диагностика PnP (фиксируем T, ищем R) — 'mirror ambiguity'"
     )
-    # Теперь задаём цвета рёбер
-    axes.colors = o3d.utility.Vector3dVector([
-        [1.0, 0.0, 0.0],  # красная X-ось
-        [0.0, 1.0, 0.0],  # зелёная Y-ось
-        [0.0, 0.0, 1.0],  # синяя Z-ось
-    ])
-    pcd.paint_uniform_color([0.7,0.7,0.7])
-    board_roi.paint_uniform_color([1,0,0])
-
-    vis3d=o3d.visualization.Visualizer(); vis3d.create_window("Cloud+ROI+Axes")
-    vis3d.add_geometry(pcd); vis3d.add_geometry(board_roi)
-    vis3d.add_geometry(obb_ls); vis3d.add_geometry(axes)
-    opt=vis3d.get_render_option(); opt.point_size=3
-    vis3d.run(); vis3d.destroy_window()
-
-    print("Pipeline complete: image ROI, corners, cloud ROI, axes.")
-    # 8) Генерация «идеальных» 3D-углов шахматной доски
-    square_size = 0.10  # метр — размер клетки шахматной доски в KITTI
-    cols, rows = pattern
-    half_offset = ((cols - 1) / 2) * square_size * x_axis \
-                  + ((rows - 1) / 2) * square_size * y_axis
-    origin0 = origin - half_offset
-    print("Adjusted origin for grid corner:", origin0)
-    corners3d = generate_object_points(
-        origin0, x_axis, y_axis,
-        pattern, square_size
+    parser.add_argument(
+        "--pairs", nargs="+", required=True,
+        help="четное число путей: img0 pcd0 img1 pcd1 ..."
     )
-    print(f"Generated {len(corners3d)} ideal 3D corners.")
-    # Визуализация: жёлтые точки поверх board_roi
-    obj_pcd = o3d.geometry.PointCloud(
-        o3d.utility.Vector3dVector(corners3d)
+    parser.add_argument(
+        "--calib", required=True,
+        help="calib_cam_to_cam.txt (рядом находится calib_velo_to_cam.txt)"
     )
-    obj_pcd.paint_uniform_color([1.0, 1.0, 0.0])  # жёлтые
-    vis2 = o3d.visualization.Visualizer()
-    vis2.create_window("Ideal 3D corners", width=800, height=600)
-    # Показываем тот же board_roi + corners
-    vis2.add_geometry(board_roi)
-    vis2.add_geometry(obj_pcd)
-    opt2 = vis2.get_render_option()
-    opt2.point_size = 8
-    opt2.background_color = np.array([0.1, 0.1, 0.1])
-    vis2.run()
-    vis2.destroy_window()
-    print("Step 8 complete: ideal 3D corners generated and visualized.")
-    # 9) Решаем PnP: получаем R и T
-    K, D, Tr_gt = load_camera_params(args.calib, args.camidx)
-    print("\n--- Solving EPnP + LM-refine PnP ---")
-    R_est, T_est, inliers = compute_extrinsics(
-        corners2d,
-        corners3d,
-        K, D
+    parser.add_argument(
+        "--camidx", type=int, default=0,
+        help="индекс камеры в calib_cam_to_cam.txt (обычно 0)"
     )
-    print("Estimated R:\n", R_est)
-    print("Estimated T:\n", T_est)
-    print(f"Inliers: {len(inliers)} / {len(corners3d)}")
-    print("Ground truth Tr_velo_to_cam:\n", Tr_gt)
-    # (опционально) собрать в 3×4 матрицу для сравнения
-    Tr_est = np.hstack([R_est, T_est.reshape(3, 1)])
-    print("Estimated Tr (3×4):\n", Tr_est)
-    diff = Tr_est - Tr_gt
-    print("Difference Tr_est - Tr_gt:\n", diff)
-    print("Norm of difference:", np.linalg.norm(diff))
+    parser.add_argument(
+        "--pattern", nargs=2, type=int, default=[7, 5],
+        help="cols rows внутренней сетки шахматки"
+    )
+    parser.add_argument(
+        "--square_size", type=float, default=0.10,
+        help="размер квадрата шахматки (м)"
+    )
+    args = parser.parse_args()
+
+    if len(args.pairs) % 2 != 0:
+        raise ValueError("--pairs должен содержать чётное число путей")
+
+    # 1) Читаем intrinsics + эталонный extrinsics (R_gt, T_gt)
+    K, D, R_gt, T_gt = load_camera_params(args.calib, args.camidx)
+    # 2) Матрица осей LiDAR→CAM (без трансляции)
+    R_axes = compute_axes_transform()
+
+    for i in range(0, len(args.pairs), 2):
+        img_path = args.pairs[i]
+        pcd_path = args.pairs[i + 1]
+        print(f"\n=== Кадр {i // 2}: {img_path} + {pcd_path} ===")
+
+        # --- 2D: выбираем ROI + находим / корректируем углы шахматки ---
+        img = cv2.imread(img_path)
+        if img is None:
+            raise FileNotFoundError(f"Не найдено изображение {img_path}")
+        x, y, w, h = map(int, cv2.selectROI("ROI", img))
+        cv2.destroyWindow("ROI")
+        roi_img = img[y : y + h, x : x + w]
+
+        corners2d = detect_image_corners(roi_img, tuple(args.pattern))
+        # переносим координаты на полное изображение
+        corners2d += np.array([x, y], dtype=np.float32)
+        corners2d = adjust_corners_interactively(img, corners2d, tuple(args.pattern))
+
+        # --- 3D: загружаем LiDAR-облако, выделяем ROI (точки шахматки), считаем локальную СК ---
+        pcd = load_point_cloud(pcd_path)
+        idxs = select_pointcloud_roi(pcd)
+        board_roi, _ = extract_roi_cloud(pcd, idxs)
+        origin, x_axis, y_axis, normal = compute_board_frame(board_roi)
+
+        # --- 4) Диагностика «зеркальных» вариантов R ---
+        results = debug_pnp_axes(
+            corners2d, origin, x_axis, y_axis,
+            tuple(args.pattern), args.square_size,
+            K, D, R_gt, T_gt
+        )
+
+        # --- 5) (Опционально) показ Overlay-результата для лучшего понимания ---
+        # Берём лучший вариант:
+        best_name, _, _, R_best, T_best = results[0]
+        print(f">> Отображаем Overlay для варианта '{best_name}'")
+        # Для Overlay нужны все LiDAR-точки из полного кадра:
+        all_lidar = np.asarray(pcd.points)  # (N×3)
+        rvec_best, _ = cv2.Rodrigues(R_best)
+        reproject_and_show(all_lidar, rvec_best, T_best.reshape(3, 1), K, D, img, window_name="Overlay")
+
+        # --- 6) Пользователь может вручную корректировать R (например, через trackbar),
+        #     но это выходит за рамки данного скрипта. Здесь показан автоматический результат. ---
+
+    cv2.destroyAllWindows()
 
 
-if __name__=="__main__":
+if __name__ == "__main__":
     main()
