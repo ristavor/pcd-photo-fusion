@@ -23,7 +23,7 @@ from calibration.calib_io import (
     load_camera_params,
     compute_axes_transform
 )
-from calibration.viz_utils import reproject_and_show, draw_overlay
+from calibration.viz_utils import reproject_and_show, draw_overlay, make_overlay_image
 
 
 def rotation_error_deg(R_est: np.ndarray, R_gt: np.ndarray) -> float:
@@ -47,11 +47,11 @@ def debug_pnp_axes(
     D: np.ndarray,
     R_gt: np.ndarray,
     T_gt: np.ndarray
-):
+) -> list[tuple[str, float, float, np.ndarray, np.ndarray]]:
     """
-    Перебирает 8 возможных конфигураций ориентации доски (±x, ±y, swap),
-    выводит reprojection‐ошибку по углу и погрешность T, сортирует.
-    Возвращает список результатов [(name, err_rot, err_t, R_est, T_est), …].
+    Возвращает список из 8 вариантов [(name, err_deg, t_err, R_est, T_est), …],
+    без автоматической сортировки и выбора.
+    Пользователь будет сам выбирать подходящий конфиг.
     """
     cols, rows = pattern
     specs = []
@@ -73,10 +73,9 @@ def debug_pnp_axes(
 
         # 2) генерируем 3D‐координаты углов шахматки
         pts3d = generate_object_points(origin, xa, ya, pattern, square_size)
-        # при желании можно уточнить 3D‐координаты углов:
-        # pts3d = refine_3d_corners(pts3d, board_cloud, k=10)
+        # (при желании: pts3d = refine_3d_corners(pts3d, board_cloud, k=10))
 
-        # 3) SolvePnP (ITERATIVE) с оценкой и rvec, и tvec
+        # 3) SolvePnP (ITERATIVE) с оценкой и rvec, tvec
         ok, rvec, tvec = cv2.solvePnP(
             objectPoints=pts3d.reshape(-1, 1, 3),
             imagePoints=corners2d.reshape(-1, 1, 2),
@@ -87,25 +86,16 @@ def debug_pnp_axes(
         if not ok:
             continue
 
-        # 4) Используем rvec и tvec из solvePnP как начальное приближение
         R_est = cv2.Rodrigues(rvec)[0]
         T_est = tvec.flatten()
 
-        # 5) Вычисляем ошибки относительно эталонного R_gt, T_gt
         err_deg = rotation_error_deg(R_est, R_gt)
         t_err = np.linalg.norm(T_est - T_gt.flatten())
 
         results.append((name, err_deg, t_err, R_est, T_est))
 
-    # Сортируем по углу (меньше лучше), затем по ΔT (что тут =0 для всех)
-    results.sort(key=lambda x: (x[1], x[2]))
+    return results
 
-    print("\n--- Варианты (название, угол_ошибки°, ΔT_норма) ---")
-    for name, e_deg, te, rmat, tvec in results:
-        print(f"{name:12s}  err_rot={e_deg:6.2f}°  err_t={te:5.3f}m\n{rmat}\n{tvec}\n")
-    best = results[0]
-    print(f">> Лучший вариант: {best[0]}  → err_rot={best[1]:.2f}°, err_t={best[2]:.3f}m\n")
-    return results  # список из кортежей (см. выше)
 
 
 def interactive_refine_RT(
@@ -258,16 +248,20 @@ def main():
         board_roi, _ = extract_roi_cloud(pcd, idxs)
         origin, x_axis, y_axis, normal = compute_board_frame(board_roi)
 
-        # --- 4) Перебираем «зеркальные» варианты R --}}
-        results = debug_pnp_axes(
+        candidates = debug_pnp_axes(
             corners2d, origin, x_axis, y_axis,
             tuple(args.pattern), args.square_size,
             K, D, R_gt, T_gt
         )
-
-        # --- 5) Автоматически взяли «best» R из списка: ---
-        best_name, _, _, R_best_mat, T_best = results[0]
-        print(f">> Лучший автоматический вариант: '{best_name}' → R_best_mat:\n{R_best_mat}\nT_fixed={T_best}\n")
+        # Теперь – интерактивный выбор:
+        R_best_mat, T_best = interactive_choose_configuration(
+            all_lidar=np.asarray(pcd.points),
+            image=img,
+            K=K, D=D,
+            candidates=candidates
+        )
+        # Можно вывести в консоль, что выбрали:
+        print(f">> Выбранный вариант: R=\n{R_best_mat}\nT={T_best}\n")
 
         # --- 6) Показываем Overlay (облако → картинка) с этим R_best и T_best: ---
         all_lidar = np.asarray(pcd.points)  # (N×3) — все точки из выбранного pcd
@@ -305,6 +299,53 @@ def main():
         # np.savetxt("T_final.txt", T_best, fmt="%.6f")
 
     cv2.destroyAllWindows()
+
+
+def interactive_choose_configuration(
+    all_lidar: np.ndarray,
+    image: np.ndarray,
+    K: np.ndarray,
+    D: np.ndarray,
+    candidates: list[tuple[str, float, float, np.ndarray, np.ndarray]]
+) -> tuple[np.ndarray, np.ndarray]:
+    idx = 0
+    n = len(candidates)
+    cv2.namedWindow("ChooseConfig", cv2.WINDOW_NORMAL)
+
+    while True:
+        name, err_deg, err_t, R_est, T_est = candidates[idx]
+        rvec, _ = cv2.Rodrigues(R_est)
+        tvec = T_est.reshape(3, 1)
+
+        # 1) Получаем кадр с точками (без текста)
+        overlay_img = make_overlay_image(all_lidar, rvec, tvec, K, D, image)
+
+        # 2) Рисуем текст name и ошибки поверх overlay_img:
+        #    (желательно жёлтый с чёрной обводкой — по желанию)
+        #    Но для проверки оставим белый, как раньше:
+        cv2.putText(overlay_img, name,
+                    (10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7,
+                    (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(overlay_img, f"rot_err={err_deg:.2f}°, t_err={err_t:.3f}m",
+                    (10, 55),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                    (255, 255, 255), 2, cv2.LINE_AA)
+
+        # 3) Показываем итоговый кадр с точками + текстом
+        cv2.imshow("ChooseConfig", overlay_img)
+
+        key = cv2.waitKey(0) & 0xFF
+        if key in (13, 10):  # Enter (13 на Windows, 10 на Linux/Mac)
+            cv2.destroyWindow("ChooseConfig")
+            return R_est, T_est
+
+        # вместо стрелок «←/→» — используем 'a' / 'd'
+        elif key == ord('a'):  # 'a' — переход «влево»
+            idx = (idx - 1) % n
+        elif key == ord('d'):  # 'd' — переход «вправо»
+            idx = (idx + 1) % n
+        # любая другая клавиша — ничего не делаем, остаёмся на тек. idx
 
 
 if __name__ == "__main__":

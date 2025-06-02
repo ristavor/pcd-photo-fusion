@@ -119,3 +119,46 @@ def draw_overlay(
     # --- далее обычный вызов imshow ---
     cv2.imshow(window_name, overlay)
     cv2.waitKey(1)
+
+# calibration/roi_selector/viz_utils.py
+
+# calibration/roi_selector/viz_utils.py
+
+# ... импорт cv2, numpy и существующий draw_overlay ...
+
+def make_overlay_image(
+    all_lidar: np.ndarray,
+    rvec: np.ndarray,
+    tvec: np.ndarray,
+    K: np.ndarray,
+    D: np.ndarray,
+    image: np.ndarray
+) -> np.ndarray:
+    """
+    Возвращает numpy-изображение overlay (BGR),
+    где на исходное image наложены красные точки LiDAR по rvec/tvec.
+    Не вызывает imshow и waitKey.
+    """
+    proj_uv, _ = cv2.projectPoints(
+        objectPoints=all_lidar.reshape(-1, 1, 3),
+        rvec=rvec,
+        tvec=tvec,
+        cameraMatrix=K,
+        distCoeffs=D
+    )
+    uv = proj_uv.reshape(-1, 2)
+
+    R_mat = cv2.Rodrigues(rvec)[0]
+    P_cam = (R_mat @ all_lidar.T + tvec).T
+    z = P_cam[:, 2]
+
+    h, w = image.shape[:2]
+    u = uv[:, 0]; v = uv[:, 1]
+    mask = (z > 0) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+
+    u_vis = u[mask].astype(np.int32)
+    v_vis = v[mask].astype(np.int32)
+
+    overlay = image.copy()
+    overlay[v_vis, u_vis] = (0, 0, 255)
+    return overlay
