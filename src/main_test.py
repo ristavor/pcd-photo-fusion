@@ -117,63 +117,64 @@ def interactive_refine_RT(
     image: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Интерактивный цикл, позволяющий «клавишами» (W/S, A/D, Q/E) корректировать
-    параметры rvec (вращение) и (I/K, J/L, U/O) корректировать tvec (трансляцию).
-    Возвращает итоговые (rvec, tvec) после нажатия ESC.
+    Интерактивная корректировка rvec и tvec в одном окне.
+    Плавно реагирует на удержание клавиш, без необходимости отпускать их.
+    Клавиши:
+      R-вращение: W/S (угол вокруг X), A/D (угол вокруг Y), Q/E (угол вокруг Z)
+      T-трансляция: I/K (смещение по X), J/L (смещение по Y), U/O (смещение по Z)
+      ESC (код 27) – выход и возврат текущих rvec и tvec.
     """
-    # 1) Начальные векторы
-    rvec = rvec_init.copy()              # shape (3,1) или (3,)
-    tvec = tvec_init.copy()              # shape (3,1) или (3,)
+    rvec = rvec_init.copy()       # shape (3,1) или (3,)
+    tvec = tvec_init.copy()       # shape (3,1) или (3,)
 
-    # 2) Шаги изменения
-    delta_ang = 0.01      # радианы (~0.57°) для rvec
-    delta_t = 0.01        # метры (1 см) для tvec
+    delta_ang = 0.01   # шаг ~0.01 rad ≈ 0.57°
+    delta_t = 0.01     # шаг смещения ~1 см
 
-    # 3) Открываем окно Overlay
     cv2.namedWindow("Overlay", cv2.WINDOW_NORMAL)
 
+    # Основной цикл. Каждый круг проверяем нажата ли клавиша, меняем rvec/tvec и рисуем.
     while True:
-        # Каждый раз рисуем наложение облака → картинка с текущими rvec и tvec
+        # 1) Проецируем и рисуем с текущими rvec и tvec
         draw_overlay(all_lidar_points, rvec, tvec.reshape(3, 1), K, D, image, window_name="Overlay")
 
-        # Ждём нажатие клавиши
-        key = cv2.waitKey(0) & 0xFF
+        # 2) Ждём небольшую паузу и получаем код нажатой клавиши (если есть)
+        key = cv2.waitKey(30) & 0xFF
         if key == 27:  # ESC
             break
 
-        # Поправки для rvec (вращение)
-        if key == ord('w'):        # W: уменьшаем угол вокруг X (rvec[0])
+        # 3) Вращение R
+        if key == ord('w'):
             rvec[0] -= delta_ang
-        elif key == ord('s'):      # S: увеличиваем угол вокруг X
+        elif key == ord('s'):
             rvec[0] += delta_ang
-        elif key == ord('a'):      # A: уменьшаем угол вокруг Y (rvec[1])
+        elif key == ord('a'):
             rvec[1] -= delta_ang
-        elif key == ord('d'):      # D: увеличиваем угол вокруг Y
+        elif key == ord('d'):
             rvec[1] += delta_ang
-        elif key == ord('q'):      # Q: уменьшаем угол вокруг Z (rvec[2])
+        elif key == ord('q'):
             rvec[2] -= delta_ang
-        elif key == ord('e'):      # E: увеличиваем угол вокруг Z
+        elif key == ord('e'):
             rvec[2] += delta_ang
 
-        # Поправки для tvec (трансляция)
-        elif key == ord('i'):      # I: уменьшаем X (т.е. сдвигаем точку камеры вправо)
+        # 4) Сдвиг T
+        elif key == ord('i'):
             tvec[0] -= delta_t
-        elif key == ord('k'):      # K: увеличиваем X
+        elif key == ord('k'):
             tvec[0] += delta_t
-        elif key == ord('j'):      # J: уменьшаем Y (двигаем точку камеры вперёд по Y)
+        elif key == ord('j'):
             tvec[1] -= delta_t
-        elif key == ord('l'):      # L: увеличиваем Y
+        elif key == ord('l'):
             tvec[1] += delta_t
-        elif key == ord('u'):      # U: уменьшаем Z (двигаем точку камеры вниз)
+        elif key == ord('u'):
             tvec[2] -= delta_t
-        elif key == ord('o'):      # O: увеличиваем Z
+        elif key == ord('o'):
             tvec[2] += delta_t
-        # Если нажата любая другая клавиша — ничего не делаем и ждём следующую
 
-        # Затем в следующей итерации снова перерисуем «Overlay» с новыми rvec и tvec
+        # Если key == −1, значит за последние 30 мс ничего не нажато: просто перерисуем следующий кадр.
 
     cv2.destroyWindow("Overlay")
     return rvec, tvec
+
 
 
 
