@@ -53,14 +53,14 @@ def draw_overlay(
     window_name: str = "Overlay"
 ):
     """
-    Быстрая отрисовка «облако → картинка» для текущего rvec + tvec.
+    Быстрая отрисовка «облако → картинка» для текущего rvec + tvec, с текстом R/T.
     all_lidar: (N×3) LiDAR-точки
-    rvec, tvec: (3×1) Rodrigues-вектор и фиксированный t
+    rvec, tvec: (3×1) Rodrigues-вектор и вектор трансляции
     K, D      : intrinsics
     image     : BGR numpy array
     window_name: имя окна для imshow
     """
-    # 1) Получаем proj_uv (N×1×2) + высчитываем глубину вручную:
+    # 1) Проецируем все точки:
     proj_uv, _ = cv2.projectPoints(
         objectPoints=all_lidar.reshape(-1, 1, 3),
         rvec=rvec,
@@ -71,12 +71,11 @@ def draw_overlay(
     uv = proj_uv.reshape(-1, 2)  # (N×2)
 
     # 2) Вычисляем глубину Z = (R * X + T)_z
-    R_mat = cv2.Rodrigues(rvec)[0]        # (3×3)
+    R_mat = cv2.Rodrigues(rvec)[0]         # (3×3)
     P_cam = (R_mat @ all_lidar.T + tvec).T  # (N×3)
-    z = P_cam[:, 2]                        # (N,)
+    z = P_cam[:, 2]                         # (N,)
 
-    # 3) Фильтруем только те точки, для которых:
-    #    z>0 (точка «перед» камерой) и (u,v) лежат внутри кадра.
+    # 3) Отбираем только «передние» точки в пределах кадра:
     h, w = image.shape[:2]
     u = uv[:, 0]
     v = uv[:, 1]
@@ -85,8 +84,38 @@ def draw_overlay(
     u_vis = u[mask].astype(np.int32)
     v_vis = v[mask].astype(np.int32)
 
-    # 4) Накладываем: перекрашиваем пиксели (v_vis, u_vis) в красный
+    # 4) Копируем исходное изображение и закрашиваем проецируемые точки красным:
     overlay = image.copy()
     overlay[v_vis, u_vis] = (0, 0, 255)
 
+    # 5) Формируем текст с текущими значениями rvec и tvec
+    #    Берём rvec и tvec как одномерные массивы, чтобы вывести по 3 компоненты.
+    R_mat = cv2.Rodrigues(rvec)[0]  # shape (3,3)
+    # Формируем три строки для матрицы
+    row0 = f"R0: [{R_mat[0, 0]:.2f}, {R_mat[0, 1]:.2f}, {R_mat[0, 2]:.2f}]"
+    row1 = f"R1: [{R_mat[1, 0]:.2f}, {R_mat[1, 1]:.2f}, {R_mat[1, 2]:.2f}]"
+    row2 = f"R2: [{R_mat[2, 0]:.2f}, {R_mat[2, 1]:.2f}, {R_mat[2, 2]:.2f}]"
+
+    # 2) Сюда распаковываем tvec
+    tv = tvec.flatten()
+    t_line = f"T: [{tv[0]:.2f}, {tv[1]:.2f}, {tv[2]:.2f}]"
+
+    # 3) Настройки шрифта и цвета
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.6
+    thickness = 2
+
+    # 4) Рисуем R-строки с чёрной обводкой и жёлтой заливкой
+    for i, line in enumerate([row0, row1, row2]):
+        y = 25 + 20 * i
+        cv2.putText(overlay, line, (10, y), font, font_scale, (0, 0, 0), thickness + 2, lineType=cv2.LINE_AA)
+        cv2.putText(overlay, line, (10, y), font, font_scale, (0, 255, 255), thickness, lineType=cv2.LINE_AA)
+
+    # 5) Текст T тоже с обводкой + заливкой
+    y_t = 25 + 20 * 3  # сразу после трёх строк R, т.е. смещаем вниз ниже row2
+    cv2.putText(overlay, t_line, (10, y_t), font, font_scale, (0, 0, 0), thickness + 2, lineType=cv2.LINE_AA)
+    cv2.putText(overlay, t_line, (10, y_t), font, font_scale, (0, 255, 255), thickness, lineType=cv2.LINE_AA)
+
+    # --- далее обычный вызов imshow ---
     cv2.imshow(window_name, overlay)
+    cv2.waitKey(1)
