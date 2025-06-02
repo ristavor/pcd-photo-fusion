@@ -42,3 +42,51 @@ def reproject_and_show(
 
     cv2.imshow(window_name, vis)
     cv2.waitKey(1)
+
+def draw_overlay(
+    all_lidar: np.ndarray,
+    rvec: np.ndarray,
+    tvec: np.ndarray,
+    K: np.ndarray,
+    D: np.ndarray,
+    image: np.ndarray,
+    window_name: str = "Overlay"
+):
+    """
+    Быстрая отрисовка «облако → картинка» для текущего rvec + tvec.
+    all_lidar: (N×3) LiDAR-точки
+    rvec, tvec: (3×1) Rodrigues-вектор и фиксированный t
+    K, D      : intrinsics
+    image     : BGR numpy array
+    window_name: имя окна для imshow
+    """
+    # 1) Получаем proj_uv (N×1×2) + высчитываем глубину вручную:
+    proj_uv, _ = cv2.projectPoints(
+        objectPoints=all_lidar.reshape(-1, 1, 3),
+        rvec=rvec,
+        tvec=tvec,
+        cameraMatrix=K,
+        distCoeffs=D
+    )
+    uv = proj_uv.reshape(-1, 2)  # (N×2)
+
+    # 2) Вычисляем глубину Z = (R * X + T)_z
+    R_mat = cv2.Rodrigues(rvec)[0]        # (3×3)
+    P_cam = (R_mat @ all_lidar.T + tvec).T  # (N×3)
+    z = P_cam[:, 2]                        # (N,)
+
+    # 3) Фильтруем только те точки, для которых:
+    #    z>0 (точка «перед» камерой) и (u,v) лежат внутри кадра.
+    h, w = image.shape[:2]
+    u = uv[:, 0]
+    v = uv[:, 1]
+    mask = (z > 0) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+
+    u_vis = u[mask].astype(np.int32)
+    v_vis = v[mask].astype(np.int32)
+
+    # 4) Накладываем: перекрашиваем пиксели (v_vis, u_vis) в красный
+    overlay = image.copy()
+    overlay[v_vis, u_vis] = (0, 0, 255)
+
+    cv2.imshow(window_name, overlay)

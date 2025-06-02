@@ -1,5 +1,3 @@
-# main_test.py
-
 #!/usr/bin/env python3
 import argparse
 import cv2
@@ -25,7 +23,7 @@ from calibration.calib_io import (
     load_camera_params,
     compute_axes_transform
 )
-from calibration.viz_utils import reproject_and_show
+from calibration.viz_utils import reproject_and_show, draw_overlay
 
 
 def rotation_error_deg(R_est: np.ndarray, R_gt: np.ndarray) -> float:
@@ -80,8 +78,8 @@ def debug_pnp_axes(
 ):
     """
     Перебирает 8 возможных конфигураций ориентации доски (±x, ±y, swap),
-    выводит для каждой reproj-ошибку по углу и погрешность T (хоть T фиксирован),
-    сортирует по наименьшей rot-погрешности, печатает все варианты.
+    выводит reprojection‐ошибку по углу и погрешность T, сортирует.
+    Возвращает список результатов [(name, err_rot, err_t, R_est, T_est), …].
     """
     cols, rows = pattern
     specs = []
@@ -93,7 +91,7 @@ def debug_pnp_axes(
 
     results = []
     for swap, sx, sy, name in specs:
-        # задаём ориентированные оси
+        # 1) задаём ориентированные оси
         if swap:
             xa = y_axis * sx
             ya = x_axis * sy
@@ -101,12 +99,12 @@ def debug_pnp_axes(
             xa = x_axis * sx
             ya = y_axis * sy
 
-        # генерируем 3D-точки углов шахматки
+        # 2) генерируем 3D‐координаты углов шахматки
         pts3d = generate_object_points(origin, xa, ya, pattern, square_size)
-        # при желании можно уточнить 3D-координаты углов:
+        # при желании можно уточнить 3D‐координаты углов:
         # pts3d = refine_3d_corners(pts3d, board_cloud, k=10)
 
-        # PnP (iterative) без догадки (rvec0=0,tvec0=0)
+        # 3) SolvePnP (ITERATIVE)
         ok, rvec, tvec = cv2.solvePnP(
             objectPoints=pts3d.reshape(-1, 1, 3),
             imagePoints=corners2d.reshape(-1, 1, 2),
@@ -117,7 +115,7 @@ def debug_pnp_axes(
         if not ok:
             continue
 
-        # уточняем только rvec, T_gt фиксировано
+        # 4) Уточняем только rvec, T_gt фиксирован
         rvec_ref = refine_r_only(
             pts3d, corners2d, K, D,
             rvec.reshape(3, 1),
@@ -131,7 +129,7 @@ def debug_pnp_axes(
 
         results.append((name, err_deg, t_err, R_est, T_est))
 
-    # сортируем по углу (меньше лучше), затем по T‐ошибке (что всегда =0 здесь)
+    # Сортируем по углу (меньше лучше), затем по ΔT (что тут =0 для всех)
     results.sort(key=lambda x: (x[1], x[2]))
 
     print("\n--- Варианты (название, угол_ошибки°, ΔT_норма) ---")
@@ -139,12 +137,70 @@ def debug_pnp_axes(
         print(f"{name:12s}  err_rot={e_deg:6.2f}°  err_t={te:5.3f}m\n{rmat}\n{tvec}\n")
     best = results[0]
     print(f">> Лучший вариант: {best[0]}  → err_rot={best[1]:.2f}°, err_t={best[2]:.3f}m\n")
-    return results
+    return results  # список из кортежей (см. выше)
+
+
+def interactive_refine_R(
+    all_lidar_points: np.ndarray,
+    rvec_init: np.ndarray,
+    tvec_fixed: np.ndarray,
+    K: np.ndarray,
+    D: np.ndarray,
+    image: np.ndarray
+) -> np.ndarray:
+    """
+    Запускает интерактивный цикл, позволяющий «клавишами» (W/S, A/D, Q/E)
+    слегка корректировать rvec_init вдоль осей X, Y, Z, сохраняя tvec_fixed.
+    Возвращает итоговый rvec (3×1) после нажатия ESC.
+
+    Маппинг клавиш:
+      W/S → вращение вокруг X (уменьш/увелич угла)
+      A/D → вращение вокруг Y
+      Q/E → вращение вокруг Z
+      ESC → выход, вернуть итоговый rvec
+    """
+    # 1) Начальная точка
+    rvec = rvec_init.copy()
+
+    # 2) Шаг изменения (в радианах)
+    delta = 0.01  # ≈0.57°
+
+    # 3) Открываем окно Overlay
+    cv2.namedWindow("Overlay", cv2.WINDOW_NORMAL)
+
+    while True:
+        # Каждый раз рисуем наложение "облако → картинка" с текущим rvec
+        draw_overlay(all_lidar_points, rvec, tvec_fixed, K, D, image, window_name="Overlay")
+
+        # Ждём нажатие клавиши
+        key = cv2.waitKey(0) & 0xFF
+        if key == 27:  # ESC
+            break
+
+        # Поправки по клавишам:
+        if key == ord('w'):     # ↑ поворот вокруг X, «вверх»
+            rvec[0] -= delta
+        elif key == ord('s'):   # ↓ поворот вокруг X, «вниз»
+            rvec[0] += delta
+        elif key == ord('a'):   # ← поворот вокруг Y, «влево»
+            rvec[1] -= delta
+        elif key == ord('d'):   # → поворот вокруг Y, «вправо»
+            rvec[1] += delta
+        elif key == ord('q'):   # Q поворот вокруг Z (против часовой)
+            rvec[2] -= delta
+        elif key == ord('e'):   # E поворот вокруг Z (по часовой)
+            rvec[2] += delta
+        # Иначе: любая другая клавиша — игнорируем, ждем дальше
+
+        # При следующей итерации цикла снова перерисуем «Overlay» с новым rvec
+
+    cv2.destroyWindow("Overlay")
+    return rvec
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Диагностика PnP (фиксируем T, ищем R) — 'mirror ambiguity'"
+        description="Диагностика PnP (фиксируем T, ищем R) + интерактивная «подкрутка» R"
     )
     parser.add_argument(
         "--pairs", nargs="+", required=True,
@@ -152,7 +208,7 @@ def main():
     )
     parser.add_argument(
         "--calib", required=True,
-        help="calib_cam_to_cam.txt (рядом находится calib_velo_to_cam.txt)"
+        help="calib_cam_to_cam.txt (рядом calib_velo_to_cam.txt)"
     )
     parser.add_argument(
         "--camidx", type=int, default=0,
@@ -164,7 +220,7 @@ def main():
     )
     parser.add_argument(
         "--square_size", type=float, default=0.10,
-        help="размер квадрата шахматки (м)"
+        help="размер клетки шахматки (м)"
     )
     args = parser.parse_args()
 
@@ -173,7 +229,7 @@ def main():
 
     # 1) Читаем intrinsics + эталонный extrinsics (R_gt, T_gt)
     K, D, R_gt, T_gt = load_camera_params(args.calib, args.camidx)
-    # 2) Матрица осей LiDAR→CAM (без трансляции)
+    # 2) Матрица R_axes (LiDAR→Camera axes‐only), нам пригодится, если надо
     R_axes = compute_axes_transform()
 
     for i in range(0, len(args.pairs), 2):
@@ -181,7 +237,7 @@ def main():
         pcd_path = args.pairs[i + 1]
         print(f"\n=== Кадр {i // 2}: {img_path} + {pcd_path} ===")
 
-        # --- 2D: выбираем ROI + находим / корректируем углы шахматки ---
+        # --- 2D: ROI + поиск/коррекция углов шахматки ---
         img = cv2.imread(img_path)
         if img is None:
             raise FileNotFoundError(f"Не найдено изображение {img_path}")
@@ -190,34 +246,55 @@ def main():
         roi_img = img[y : y + h, x : x + w]
 
         corners2d = detect_image_corners(roi_img, tuple(args.pattern))
-        # переносим координаты на полное изображение
+        # Переносим координаты найденных углов на полное изображение
         corners2d += np.array([x, y], dtype=np.float32)
         corners2d = adjust_corners_interactively(img, corners2d, tuple(args.pattern))
 
-        # --- 3D: загружаем LiDAR-облако, выделяем ROI (точки шахматки), считаем локальную СК ---
+        # --- 3D: загружаем LiDAR-облако, отмечаем ROI, вычисляем локальную СК доски ---
         pcd = load_point_cloud(pcd_path)
         idxs = select_pointcloud_roi(pcd)
         board_roi, _ = extract_roi_cloud(pcd, idxs)
         origin, x_axis, y_axis, normal = compute_board_frame(board_roi)
 
-        # --- 4) Диагностика «зеркальных» вариантов R ---
+        # --- 4) Перебираем «зеркальные» варианты R --}}
         results = debug_pnp_axes(
             corners2d, origin, x_axis, y_axis,
             tuple(args.pattern), args.square_size,
             K, D, R_gt, T_gt
         )
 
-        # --- 5) (Опционально) показ Overlay-результата для лучшего понимания ---
-        # Берём лучший вариант:
-        best_name, _, _, R_best, T_best = results[0]
-        print(f">> Отображаем Overlay для варианта '{best_name}'")
-        # Для Overlay нужны все LiDAR-точки из полного кадра:
-        all_lidar = np.asarray(pcd.points)  # (N×3)
-        rvec_best, _ = cv2.Rodrigues(R_best)
-        reproject_and_show(all_lidar, rvec_best, T_best.reshape(3, 1), K, D, img, window_name="Overlay")
+        # --- 5) Автоматически взяли «best» R из списка: ---
+        best_name, _, _, R_best_mat, T_best = results[0]
+        print(f">> Лучший автоматический вариант: '{best_name}' → R_best_mat:\n{R_best_mat}\nT_fixed={T_best}\n")
 
-        # --- 6) Пользователь может вручную корректировать R (например, через trackbar),
-        #     но это выходит за рамки данного скрипта. Здесь показан автоматический результат. ---
+        # --- 6) Показываем Overlay (облако → картинка) с этим R_best: ---
+        all_lidar = np.asarray(pcd.points)  # (N×3) — все точки из выбранного pcd
+        rvec_best, _ = cv2.Rodrigues(R_best_mat)  # (3×1) вектор Rodrigues
+        print(">> Отображаем первоначальный Overlay для R_best...")
+        draw_overlay(all_lidar, rvec_best, T_best.reshape(3, 1), K, D, img, window_name="Overlay")
+        cv2.waitKey(1)  # небольшой debounce, чтобы окно успело появиться
+
+        # --- 7) Запускаем интерактивный режим, чтобы пользователь «подкрутил» R вручную: ---
+        print(">> Войдите в интерактивный режим корректировки R. \n"
+              "   Клавиши: W/S (X‐ось), A/D (Y‐ось), Q/E (Z‐ось), ESC → закончить.")
+        rvec_refined = interactive_refine_R(
+            all_lidar_points=all_lidar,
+            rvec_init=rvec_best,
+            tvec_fixed=T_best.reshape(3, 1),
+            K=K, D=D,
+            image=img
+        )
+
+        # --- 8) После ESC получаем итоговый rvec_refined: ---
+        R_refined_mat = cv2.Rodrigues(rvec_refined)[0]
+        print(f">> Итоговый rvec_refined (Rodrigues):\n{rvec_refined.flatten()}\n"
+              f"   и соответствующая R_refined:\n{R_refined_mat}\n"
+              f"   T оставили прежним: {T_best}\n")
+
+        # --- 9) (Опционально) здесь можете сохранить R_refined_mat и T_best куда-нибудь в файл ---
+        # Например:
+        # np.savetxt("R_final.txt", R_refined_mat, fmt="%.6f")
+        # np.savetxt("T_final.txt", T_best, fmt="%.6f")
 
     cv2.destroyAllWindows()
 
