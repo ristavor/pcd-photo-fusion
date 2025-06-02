@@ -117,63 +117,85 @@ def interactive_refine_RT(
     image: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Интерактивная корректировка rvec и tvec в одном окне.
-    Плавно реагирует на удержание клавиш, без необходимости отпускать их.
-    Клавиши:
-      R-вращение: W/S (угол вокруг X), A/D (угол вокруг Y), Q/E (угол вокруг Z)
-      T-трансляция: I/K (смещение по X), J/L (смещение по Y), U/O (смещение по Z)
-      ESC (код 27) – выход и возврат текущих rvec и tvec.
+    Интерактивная корректировка:
+      - rvec можно крутить кнопками (W/S/A/D/Q/E) и мышью (перетаскивание ЛКМ).
+      - tvec меняется кнопками (I/K, J/L, U/O).
+    Возвращает (rvec, tvec) при нажатии ESC.
     """
-    rvec = rvec_init.copy()       # shape (3,1) или (3,)
-    tvec = tvec_init.copy()       # shape (3,1) или (3,)
+    rvec = rvec_init.copy()
+    tvec = tvec_init.copy()
 
-    delta_ang = 0.01   # шаг ~0.01 rad ≈ 0.57°
-    delta_t = 0.01     # шаг смещения ~1 см
+    # Параметры «шагов» при вращении с клавиатуры:
+    delta_ang = 0.01    # ≈0.57° за нажатие
+    delta_t   = 0.01    # 1 см за нажатие
 
+    # Коэффициент «чувствительности» для мышиного вращения:
+    mouse_sensitivity = 0.005  # можно регулировать
+
+    # Переменные для mouse-callback-а:
+    dragging = False
+    last_x, last_y = 0, 0
+
+    # Функция-обработчик мыши:
+    def on_mouse(event, x, y, flags, _):
+        nonlocal dragging, last_x, last_y, rvec
+
+        if event == cv2.EVENT_LBUTTONDOWN:
+            # Начали тянуть мышь
+            dragging = True
+            last_x, last_y = x, y
+
+        elif event == cv2.EVENT_MOUSEMOVE and dragging:
+            # Пока тащат, вычисляем смещение от последней точки
+            dx = x - last_x
+            dy = y - last_y
+
+            # Обновляем rvec:
+            # будем считать, что dx → вращение вокруг Y, а dy → вокруг X
+            rvec[1] += dx * mouse_sensitivity  # «yaw»
+            rvec[0] += dy * mouse_sensitivity  # «pitch»
+
+            # «Сдвигаем» базовую точку для следующей итерации
+            last_x, last_y = x, y
+
+        elif event == cv2.EVENT_LBUTTONUP:
+            # Конец перетаскивания
+            dragging = False
+
+    # Подвязываем обработчик к окну «Overlay»
     cv2.namedWindow("Overlay", cv2.WINDOW_NORMAL)
+    cv2.setMouseCallback("Overlay", on_mouse)
 
-    # Основной цикл. Каждый круг проверяем нажата ли клавиша, меняем rvec/tvec и рисуем.
     while True:
-        # 1) Проецируем и рисуем с текущими rvec и tvec
+        # 1) Рисуем наложение (draw_overlay внутри себя делает imshow+waitKey(1))
         draw_overlay(all_lidar_points, rvec, tvec.reshape(3, 1), K, D, image, window_name="Overlay")
 
-        # 2) Ждём небольшую паузу и получаем код нажатой клавиши (если есть)
+        # 2) Ждём 30 мс для клавиатуры
         key = cv2.waitKey(30) & 0xFF
         if key == 27:  # ESC
             break
 
-        # 3) Вращение R
-        if key == ord('w'):
-            rvec[0] -= delta_ang
-        elif key == ord('s'):
-            rvec[0] += delta_ang
-        elif key == ord('a'):
-            rvec[1] -= delta_ang
-        elif key == ord('d'):
-            rvec[1] += delta_ang
-        elif key == ord('q'):
-            rvec[2] -= delta_ang
-        elif key == ord('e'):
-            rvec[2] += delta_ang
+        # 3) Обработка нажатий клавиш для R
+        if   key == ord('w'): rvec[0] -= delta_ang
+        elif key == ord('s'): rvec[0] += delta_ang
+        elif key == ord('a'): rvec[1] -= delta_ang
+        elif key == ord('d'): rvec[1] += delta_ang
+        elif key == ord('q'): rvec[2] -= delta_ang
+        elif key == ord('e'): rvec[2] += delta_ang
 
-        # 4) Сдвиг T
-        elif key == ord('i'):
-            tvec[0] -= delta_t
-        elif key == ord('k'):
-            tvec[0] += delta_t
-        elif key == ord('j'):
-            tvec[1] -= delta_t
-        elif key == ord('l'):
-            tvec[1] += delta_t
-        elif key == ord('u'):
-            tvec[2] -= delta_t
-        elif key == ord('o'):
-            tvec[2] += delta_t
+        # 4) Обработка клавиш для T
+        elif key == ord('i'): tvec[0] -= delta_t
+        elif key == ord('k'): tvec[0] += delta_t
+        elif key == ord('j'): tvec[1] -= delta_t
+        elif key == ord('l'): tvec[1] += delta_t
+        elif key == ord('u'): tvec[2] -= delta_t
+        elif key == ord('o'): tvec[2] += delta_t
 
-        # Если key == −1, значит за последние 30 мс ничего не нажато: просто перерисуем следующий кадр.
+        # Если key == −1 (никакой клавиши) или другие клавиши, то цикл просто перерисует.
 
     cv2.destroyWindow("Overlay")
     return rvec, tvec
+
 
 
 
