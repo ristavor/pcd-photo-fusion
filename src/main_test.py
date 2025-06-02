@@ -36,34 +36,6 @@ def rotation_error_deg(R_est: np.ndarray, R_gt: np.ndarray) -> float:
     return np.degrees(np.arccos(cos_val))
 
 
-def refine_r_only(
-    pts3d: np.ndarray,
-    pts2d: np.ndarray,
-    K: np.ndarray,
-    D: np.ndarray,
-    rvec0: np.ndarray,
-    T_gt: np.ndarray
-) -> np.ndarray:
-    """
-    LM-оптимизация только rvec, при фиксированном T_gt.
-    Возвращает уточнённый rvec (3×1).
-    """
-    def residuals(r):
-        r = r.reshape(3, 1)
-        proj, _ = cv2.projectPoints(
-            pts3d.reshape(-1, 1, 3),
-            r,
-            T_gt.reshape(3, 1),
-            K,
-            D
-        )
-        return (proj.reshape(-1, 2) - pts2d).reshape(-1)
-
-    x0 = rvec0.flatten()
-    sol = least_squares(residuals, x0, method='lm')
-    return sol.x.reshape(3, 1)
-
-
 def debug_pnp_axes(
     corners2d: np.ndarray,
     origin: np.ndarray,
@@ -104,7 +76,7 @@ def debug_pnp_axes(
         # при желании можно уточнить 3D‐координаты углов:
         # pts3d = refine_3d_corners(pts3d, board_cloud, k=10)
 
-        # 3) SolvePnP (ITERATIVE)
+        # 3) SolvePnP (ITERATIVE) с оценкой и rvec, и tvec
         ok, rvec, tvec = cv2.solvePnP(
             objectPoints=pts3d.reshape(-1, 1, 3),
             imagePoints=corners2d.reshape(-1, 1, 2),
@@ -115,15 +87,11 @@ def debug_pnp_axes(
         if not ok:
             continue
 
-        # 4) Уточняем только rvec, T_gt фиксирован
-        rvec_ref = refine_r_only(
-            pts3d, corners2d, K, D,
-            rvec.reshape(3, 1),
-            T_gt
-        )
-        R_est = cv2.Rodrigues(rvec_ref)[0]
-        T_est = T_gt.flatten()
+        # 4) Используем rvec и tvec из solvePnP как начальное приближение
+        R_est = cv2.Rodrigues(rvec)[0]
+        T_est = tvec.flatten()
 
+        # 5) Вычисляем ошибки относительно эталонного R_gt, T_gt
         err_deg = rotation_error_deg(R_est, R_gt)
         t_err = np.linalg.norm(T_est - T_gt.flatten())
 
@@ -140,62 +108,73 @@ def debug_pnp_axes(
     return results  # список из кортежей (см. выше)
 
 
-def interactive_refine_R(
+def interactive_refine_RT(
     all_lidar_points: np.ndarray,
     rvec_init: np.ndarray,
-    tvec_fixed: np.ndarray,
+    tvec_init: np.ndarray,
     K: np.ndarray,
     D: np.ndarray,
     image: np.ndarray
-) -> np.ndarray:
+) -> tuple[np.ndarray, np.ndarray]:
     """
-    Запускает интерактивный цикл, позволяющий «клавишами» (W/S, A/D, Q/E)
-    слегка корректировать rvec_init вдоль осей X, Y, Z, сохраняя tvec_fixed.
-    Возвращает итоговый rvec (3×1) после нажатия ESC.
-
-    Маппинг клавиш:
-      W/S → вращение вокруг X (уменьш/увелич угла)
-      A/D → вращение вокруг Y
-      Q/E → вращение вокруг Z
-      ESC → выход, вернуть итоговый rvec
+    Интерактивный цикл, позволяющий «клавишами» (W/S, A/D, Q/E) корректировать
+    параметры rvec (вращение) и (I/K, J/L, U/O) корректировать tvec (трансляцию).
+    Возвращает итоговые (rvec, tvec) после нажатия ESC.
     """
-    # 1) Начальная точка
-    rvec = rvec_init.copy()
+    # 1) Начальные векторы
+    rvec = rvec_init.copy()              # shape (3,1) или (3,)
+    tvec = tvec_init.copy()              # shape (3,1) или (3,)
 
-    # 2) Шаг изменения (в радианах)
-    delta = 0.01  # ≈0.57°
+    # 2) Шаги изменения
+    delta_ang = 0.01      # радианы (~0.57°) для rvec
+    delta_t = 0.01        # метры (1 см) для tvec
 
     # 3) Открываем окно Overlay
     cv2.namedWindow("Overlay", cv2.WINDOW_NORMAL)
 
     while True:
-        # Каждый раз рисуем наложение "облако → картинка" с текущим rvec
-        draw_overlay(all_lidar_points, rvec, tvec_fixed, K, D, image, window_name="Overlay")
+        # Каждый раз рисуем наложение облака → картинка с текущими rvec и tvec
+        draw_overlay(all_lidar_points, rvec, tvec.reshape(3, 1), K, D, image, window_name="Overlay")
 
         # Ждём нажатие клавиши
         key = cv2.waitKey(0) & 0xFF
         if key == 27:  # ESC
             break
 
-        # Поправки по клавишам:
-        if key == ord('w'):     # ↑ поворот вокруг X, «вверх»
-            rvec[0] -= delta
-        elif key == ord('s'):   # ↓ поворот вокруг X, «вниз»
-            rvec[0] += delta
-        elif key == ord('a'):   # ← поворот вокруг Y, «влево»
-            rvec[1] -= delta
-        elif key == ord('d'):   # → поворот вокруг Y, «вправо»
-            rvec[1] += delta
-        elif key == ord('q'):   # Q поворот вокруг Z (против часовой)
-            rvec[2] -= delta
-        elif key == ord('e'):   # E поворот вокруг Z (по часовой)
-            rvec[2] += delta
-        # Иначе: любая другая клавиша — игнорируем, ждем дальше
+        # Поправки для rvec (вращение)
+        if key == ord('w'):        # W: уменьшаем угол вокруг X (rvec[0])
+            rvec[0] -= delta_ang
+        elif key == ord('s'):      # S: увеличиваем угол вокруг X
+            rvec[0] += delta_ang
+        elif key == ord('a'):      # A: уменьшаем угол вокруг Y (rvec[1])
+            rvec[1] -= delta_ang
+        elif key == ord('d'):      # D: увеличиваем угол вокруг Y
+            rvec[1] += delta_ang
+        elif key == ord('q'):      # Q: уменьшаем угол вокруг Z (rvec[2])
+            rvec[2] -= delta_ang
+        elif key == ord('e'):      # E: увеличиваем угол вокруг Z
+            rvec[2] += delta_ang
 
-        # При следующей итерации цикла снова перерисуем «Overlay» с новым rvec
+        # Поправки для tvec (трансляция)
+        elif key == ord('i'):      # I: уменьшаем X (т.е. сдвигаем точку камеры вправо)
+            tvec[0] -= delta_t
+        elif key == ord('k'):      # K: увеличиваем X
+            tvec[0] += delta_t
+        elif key == ord('j'):      # J: уменьшаем Y (двигаем точку камеры вперёд по Y)
+            tvec[1] -= delta_t
+        elif key == ord('l'):      # L: увеличиваем Y
+            tvec[1] += delta_t
+        elif key == ord('u'):      # U: уменьшаем Z (двигаем точку камеры вниз)
+            tvec[2] -= delta_t
+        elif key == ord('o'):      # O: увеличиваем Z
+            tvec[2] += delta_t
+        # Если нажата любая другая клавиша — ничего не делаем и ждём следующую
+
+        # Затем в следующей итерации снова перерисуем «Overlay» с новыми rvec и tvec
 
     cv2.destroyWindow("Overlay")
-    return rvec
+    return rvec, tvec
+
 
 
 def main():
@@ -267,29 +246,35 @@ def main():
         best_name, _, _, R_best_mat, T_best = results[0]
         print(f">> Лучший автоматический вариант: '{best_name}' → R_best_mat:\n{R_best_mat}\nT_fixed={T_best}\n")
 
-        # --- 6) Показываем Overlay (облако → картинка) с этим R_best: ---
+        # --- 6) Показываем Overlay (облако → картинка) с этим R_best и T_best: ---
         all_lidar = np.asarray(pcd.points)  # (N×3) — все точки из выбранного pcd
-        rvec_best, _ = cv2.Rodrigues(R_best_mat)  # (3×1) вектор Rodrigues
-        print(">> Отображаем первоначальный Overlay для R_best...")
-        draw_overlay(all_lidar, rvec_best, T_best.reshape(3, 1), K, D, img, window_name="Overlay")
+        rvec_best, _ = cv2.Rodrigues(R_best_mat)  # (3×1) Rodrigues-ветор для лучшего варианта
+        tvec_best = T_best.reshape(3, 1)  # (3×1) вектор трансляции из PnP
+
+        print(">> Отображаем первоначальный Overlay для R_best и T_best...")
+        draw_overlay(all_lidar, rvec_best, tvec_best, K, D, img, window_name="Overlay")
         cv2.waitKey(1)  # небольшой debounce, чтобы окно успело появиться
 
-        # --- 7) Запускаем интерактивный режим, чтобы пользователь «подкрутил» R вручную: ---
-        print(">> Войдите в интерактивный режим корректировки R. \n"
-              "   Клавиши: W/S (X‐ось), A/D (Y‐ось), Q/E (Z‐ось), ESC → закончить.")
-        rvec_refined = interactive_refine_R(
+        # --- 7) Запускаем интерактивный режим для корректировки R и T: ---
+        print(">> Входим в интерактивный режим корректировки R и T. \n"
+              "   Клавиши для вращения R: W/S (X‐ось), A/D (Y‐ось), Q/E (Z‐ось);\n"
+              "   Клавиши для трансляции T: I/K (X), J/L (Y), U/O (Z);\n"
+              "   ESC → закончить и сохранить текущее состояние.")
+        rvec_refined, tvec_refined = interactive_refine_RT(
             all_lidar_points=all_lidar,
             rvec_init=rvec_best,
-            tvec_fixed=T_best.reshape(3, 1),
+            tvec_init=tvec_best,
             K=K, D=D,
             image=img
         )
 
-        # --- 8) После ESC получаем итоговый rvec_refined: ---
-        R_refined_mat = cv2.Rodrigues(rvec_refined)[0]
+        # --- 8) После ESC получаем итоговые rvec_refined и tvec_refined: ---
+        R_refined_mat = cv2.Rodrigues(rvec_refined)[0]  # окончательная матрица вращения
+        T_refined = tvec_refined.flatten()  # окончательный вектор трансляции
+
         print(f">> Итоговый rvec_refined (Rodrigues):\n{rvec_refined.flatten()}\n"
               f"   и соответствующая R_refined:\n{R_refined_mat}\n"
-              f"   T оставили прежним: {T_best}\n")
+              f"   Итоговый tvec_refined: {T_refined}\n")
 
         # --- 9) (Опционально) здесь можете сохранить R_refined_mat и T_best куда-нибудь в файл ---
         # Например:
