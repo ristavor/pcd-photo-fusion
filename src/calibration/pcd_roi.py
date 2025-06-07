@@ -31,6 +31,10 @@ def load_point_cloud(path: str) -> o3d.geometry.PointCloud:
 
     if ext in ('.pcd', '.ply'):
         pcd = o3d.io.read_point_cloud(str(p))
+        pts = np.asarray(pcd.points)
+        mask = ~np.isnan(pts).any(axis=1)
+        idx = np.nonzero(mask)[0]
+        pcd = pcd.select_by_index(idx)
     elif ext == '.bin':
         data = np.fromfile(str(p), dtype=np.float32)
         if data.size % 4 != 0:
