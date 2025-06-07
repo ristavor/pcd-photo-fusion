@@ -152,11 +152,11 @@ def main():
         help="четное число путей: img0 pcd0 img1 pcd1 …"
     )
     parser.add_argument(
-        "--pattern", nargs=2, type=int, default=[7, 5],
+        "--pattern", nargs=2, type=int, required=True,
         help="cols rows внутренних углов шахматки"
     )
     parser.add_argument(
-        "--square_size", type=float, default=0.10,
+        "--square_size", type=float, required=True,
         help="размер клетки шахматки (в метрах)"
     )
     args = parser.parse_args()
