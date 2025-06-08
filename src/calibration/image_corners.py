@@ -52,16 +52,17 @@ def detect_image_corners(
         raise RuntimeError(f"Шахматка размером {pattern_size} не найдена на изображении.")
 
     # Уточняем позиции субпиксельно
-    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.1)
+    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 50, 0.1)
     cv2.cornerSubPix(
         gray,
         corners,
-        winSize=(11, 11),
+        winSize=(5, 5),
         zeroZone=(-1, -1),
         criteria=criteria
     )
     # corners имеет shape (N,1,2) → приводим к (N,2)
     corners = corners.reshape(-1, 2).astype(np.float32)
+    corners = fix_corners_order(corners)
     return corners
 
 
@@ -146,4 +147,28 @@ def adjust_corners_interactively(
             break
 
     cv2.destroyWindow(win_name)
+    return corners
+
+
+def fix_corners_order(
+    corners: NDArray[np.float32]
+) -> NDArray[np.float32]:
+    """
+    Гарантирует, что первая точка массива углов будет выше и левее всех (минимальная сумма x+y),
+    а последняя — ниже и правее всех (максимальная сумма x+y). Если это не так, переворачивает массив.
+
+    Параметры:
+      corners (NDArray[float32], shape (N,2)): массив углов.
+
+    Возвращает:
+      corners (NDArray[float32], shape (N,2)): массив углов в правильном порядке.
+    """
+    if corners.shape[0] < 2:
+        return corners
+    sums = corners.sum(axis=1)
+    idx_min = np.argmin(sums)
+    idx_max = np.argmax(sums)
+    # Если первая точка не самая "верхняя-левая" или последняя не самая "нижняя-правая" — перевернуть
+    if idx_min != 0 or idx_max != corners.shape[0] - 1:
+        corners = corners[::-1].copy()
     return corners
