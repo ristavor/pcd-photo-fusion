@@ -37,6 +37,11 @@ def compute_board_frame(
     Возвращаемые типы — всегда float32 для совместимости с Open3D и OpenCV.
     """
     points = np.asarray(board_cloud.points, dtype=np.float32)
+    
+    # Проверяем, что у нас достаточно точек
+    if len(points) < 4:  # Минимум 4 точки для определения плоскости
+        raise ValueError("Недостаточно точек для определения плоскости шахматки (минимум 4)")
+    
     origin = points.mean(axis=0)
 
     # Ковариационная матрица точек относительно origin
