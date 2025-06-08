@@ -5,3 +5,4 @@ src/colorizer/__pycache__
 src/rectifier/__pycache__
 src/utils/__pycache__
 src/synchronizer/__pycache__
+src/calibration_gui/__pycache__
