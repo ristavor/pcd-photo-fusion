@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, 
-    QLabel, QFileDialog, QSpinBox, QMessageBox
+    QLabel, QFileDialog, QSpinBox, QMessageBox,
+    QCheckBox
 )
 from PyQt6.QtCore import Qt
 from pathlib import Path
@@ -32,7 +33,7 @@ class ColorizationWindow(QWidget):
         
         # Image file selection
         img_layout = QHBoxLayout()
-        self.img_label = QLabel("Image file (NOT rectified):")
+        self.img_label = QLabel("Image file:")
         self.img_path_label = QLabel("No file selected")
         self.img_btn = QPushButton("Browse")
         self.img_btn.clicked.connect(self.select_image)
@@ -40,6 +41,10 @@ class ColorizationWindow(QWidget):
         img_layout.addWidget(self.img_path_label)
         img_layout.addWidget(self.img_btn)
         layout.addLayout(img_layout)
+
+        # Image rectification checkbox
+        self.rectified_checkbox = QCheckBox("Image is already rectified")
+        layout.addWidget(self.rectified_checkbox)
         
         # Point cloud file selection
         pcd_layout = QHBoxLayout()
@@ -88,7 +93,13 @@ class ColorizationWindow(QWidget):
         self.process_btn.clicked.connect(self.process_colorization)
         layout.addWidget(self.process_btn)
         
-        # Save as TXT button
+        # View Result button (initially hidden)
+        self.view_result_btn = QPushButton("View Result")
+        self.view_result_btn.clicked.connect(self.view_result)
+        self.view_result_btn.setEnabled(False)
+        layout.addWidget(self.view_result_btn)
+        
+        # Save as TXT button (initially hidden)
         self.save_txt_btn = QPushButton("Save as KITTI TXT")
         self.save_txt_btn.clicked.connect(self.save_result_txt)
         self.save_txt_btn.setEnabled(False)
@@ -101,7 +112,7 @@ class ColorizationWindow(QWidget):
         
     def select_image(self):
         file_name, _ = QFileDialog.getOpenFileName(
-            self, "Select Image (NOT rectified)", "", "Image Files (*.png *.jpg *.jpeg)"
+            self, "Select Image", "", "Image Files (*.png *.jpg *.jpeg)"
         )
         if file_name:
             self.img_path_label.setText(file_name)
@@ -138,26 +149,37 @@ class ColorizationWindow(QWidget):
             
         try:
             print("\n[Colorizer GUI] --- Начало процесса ---")
-            print("Image file (NOT rectified):", self.img_path_label.text())
+            print("Image file:", self.img_path_label.text())
             print("Point cloud file:", self.pcd_path_label.text())
             print("Camera calibration file:", self.cam_calib_path_label.text())
             print("Velodyne calibration file:", self.velo_calib_path_label.text())
             print("Camera index:", self.cam_spinbox.value())
-            # Load original (NOT rectified) image
+            
+            # Load image
             img = cv2.imread(self.img_path_label.text())
             if img is None:
                 print("[ERROR] Не удалось загрузить изображение!")
                 raise RuntimeError("Image not loaded")
             print("Image shape:", img.shape)
-            # Rectify image as in main.py
+
+            # Get camera matrix K
             cam_idx = self.cam_spinbox.value()
-            rectifier = ImageRectifier(
-                calib_cam_path=self.cam_calib_path_label.text(),
-                cam_idx=cam_idx
-            )
-            img_rect = rectifier.rectify(img)
-            print("Rectified image shape:", img_rect.shape)
-            print("rectifier.P_new (P_rect[:3, :3]):\n", rectifier.P_new)
+            if not self.rectified_checkbox.isChecked():
+                # Rectify image if not already rectified
+                rectifier = ImageRectifier(
+                    calib_cam_path=self.cam_calib_path_label.text(),
+                    cam_idx=cam_idx
+                )
+                img = rectifier.rectify(img)
+                K = rectifier.P_new
+                print("Image rectified, new shape:", img.shape)
+            else:
+                # Use P_rect from calibration file directly
+                K = read_rectified_K(self.cam_calib_path_label.text(), cam_idx)
+                print("Using existing rectified image")
+            
+            print("Camera matrix K:\n", K)
+            
             # Load point cloud
             pcd_path = Path(self.pcd_path_label.text())
             if pcd_path.suffix == '.bin':
@@ -172,26 +194,37 @@ class ColorizationWindow(QWidget):
                     pts = pts.reshape(1, -1)
                 pts = pts[:, :3]
             print("Point cloud shape (N, 3):", pts.shape)
+            
             # Get calibration matrices
             R, T = read_velo_to_cam(self.velo_calib_path_label.text())
             print("R (velo_to_cam):\n", R)
             print("T (velo_to_cam):", T)
-            # Use rectifier.P_new as K for colorizer
-            colorizer = Colorizer(R, T, rectifier.P_new)
-            self.colored_pcd = colorizer.colorize(pts, img_rect)
+            
+            # Colorize point cloud
+            colorizer = Colorizer(R, T, K)
+            self.colored_pcd = colorizer.colorize(pts, img)
             print("[Colorizer GUI] --- Окрашивание завершено ---\n")
-            # Show the colored point cloud immediately
-            o3d.visualization.draw_geometries(
-                [self.colored_pcd],
-                window_name='Colored Point Cloud',
-                width=800,
-                height=600,
-                point_show_normal=False
-            )
+            
+            # Show completion message and enable view/save buttons
+            QMessageBox.information(self, "Success", "Colorization completed successfully!")
+            self.view_result_btn.setEnabled(True)
             self.save_txt_btn.setEnabled(True)
+            
         except Exception as e:
             print("[Colorizer GUI] --- Ошибка ---", str(e))
             QMessageBox.critical(self, "Error", f"Processing failed: {str(e)}")
+            
+    def view_result(self):
+        if self.colored_pcd is None:
+            QMessageBox.warning(self, "Error", "No colored point cloud to view!")
+            return
+        o3d.visualization.draw_geometries(
+            [self.colored_pcd],
+            window_name='Colored Point Cloud',
+            width=800,
+            height=600,
+            point_show_normal=False
+        )
             
     def save_result_txt(self):
         if self.colored_pcd is None:
