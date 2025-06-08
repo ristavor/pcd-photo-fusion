@@ -50,7 +50,7 @@ class ParametersPage(QWizardPage):
         # File paths
         self.image_path = self.create_file_input("Image file:", layout)
         self.pcd_path = self.create_file_input("Point cloud file:", layout)
-        self.calib_path = self.create_file_input("Camera calibration file:", layout)
+        self.calib_path = self.create_file_input("Camera calibration file (optional):", layout)
         
         self.setLayout(layout)
         
@@ -60,7 +60,7 @@ class ParametersPage(QWizardPage):
         self.registerField("square_size*", self.square_size, "value", self.square_size.valueChanged)
         self.registerField("image_path*", self.image_path)
         self.registerField("pcd_path*", self.pcd_path)
-        self.registerField("calib_path*", self.calib_path)
+        self.registerField("calib_path", self.calib_path)  # Removed * to make it optional
 
         # Connect value changed signals to trigger validation
         self.cols_spin.valueChanged.connect(self._on_field_changed)
@@ -84,8 +84,8 @@ class ParametersPage(QWizardPage):
             self.rows_spin.value() > 0,
             self.square_size.value() > 0,
             bool(self.image_path.text().strip()),
-            bool(self.pcd_path.text().strip()),
-            bool(self.calib_path.text().strip())
+            bool(self.pcd_path.text().strip())
+            # calib_path is optional, so we don't check it
         ])
     
     def create_file_input(self, label_text, parent_layout):
@@ -121,7 +121,7 @@ class ParametersPage(QWizardPage):
             QMessageBox.warning(
                 self,
                 "Validation Error",
-                "Please fill in all fields."
+                "Please fill in all required fields."
             )
             return False
         return True
@@ -157,9 +157,15 @@ class CalibrationWizard(QWidget):
         
         layout.addLayout(button_layout)
     
+    def __del__(self):
+        """Cleanup resources when the object is destroyed."""
+        if hasattr(self, 'calib_process'):
+            self.calib_process.cleanup()
+    
     def go_back(self):
         """Return to start screen."""
         if isinstance(self.main_window, QMainWindow):
+            self.calib_process.cleanup()
             self.main_window.show_start_screen()
     
     def start_calibration(self):
@@ -168,7 +174,7 @@ class CalibrationWizard(QWidget):
             QMessageBox.warning(
                 self,
                 "Validation Error",
-                "Please fill in all fields."
+                "Please fill in all required fields."
             )
             return
         
@@ -193,13 +199,13 @@ class CalibrationWizard(QWidget):
                 "calib_path": calib_path
             }
             
-            # Load camera parameters
-            if not self.calib_process.load_camera_params(params["calib_path"]):
-                raise RuntimeError("Failed to load camera parameters")
-            
-            # Process image
+            # Process image first
             if not self.calib_process.process_image(params["image_path"], params["pattern"]):
                 raise RuntimeError("Failed to process image")
+            
+            # Load camera parameters (now that we have the image loaded)
+            if not self.calib_process.load_camera_params(params["calib_path"]):
+                raise RuntimeError("Failed to load camera parameters")
             
             # Process point cloud
             if not self.calib_process.process_pointcloud(params["pcd_path"]):
@@ -210,6 +216,7 @@ class CalibrationWizard(QWidget):
                 params["pattern"], params["square_size"]
             ):
                 # User cancelled configuration selection
+                self.calib_process.cleanup()
                 return
             
             # Interactive refinement
@@ -228,12 +235,14 @@ class CalibrationWizard(QWidget):
             main_window = self.window()
             if isinstance(main_window, QMainWindow):
                 print("Debug: Calling show_results on main window")
+                self.calib_process.cleanup()  # Cleanup before showing results
                 main_window.show_results(R_refined, T_refined)
             else:
                 print(f"Debug: Main window not found. Window type: {type(main_window)}")
             
         except Exception as e:
             print(f"Debug: Calibration failed with error: {str(e)}")
+            self.calib_process.cleanup()  # Cleanup on error
             QMessageBox.critical(
                 self,
                 "Error",

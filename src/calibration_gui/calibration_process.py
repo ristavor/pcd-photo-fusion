@@ -7,6 +7,7 @@ import numpy as np
 import open3d as o3d
 from typing import Tuple, Optional, Dict, Any
 import logging
+import time
 
 # Настройка логирования
 logging.basicConfig(
@@ -29,7 +30,8 @@ from calibration.board_geometry import (
     generate_object_points
 )
 from calibration.calib_io import (
-    load_camera_params
+    load_camera_params,
+    create_ideal_camera_params
 )
 from calibration.viz_utils import (
     draw_overlay,
@@ -41,8 +43,6 @@ class CalibrationProcess:
     def __init__(self):
         self.K = None  # Camera matrix
         self.D = None  # Distortion coefficients
-        self.R_gt = None  # Ground truth rotation
-        self.T_gt = None  # Ground truth translation
         
         # Current calibration state
         self.corners2d = None
@@ -57,12 +57,63 @@ class CalibrationProcess:
         # Visualization state
         self.vis = None
         self.colored_window_open = False
+        
+        # Initialize Open3D
+        o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
+        
+        # Ensure GLFW is initialized
+        try:
+            o3d.visualization.gui.Application.instance.initialize()
+        except Exception as e:
+            logger.warning(f"Failed to initialize Open3D GUI: {e}")
+    
+    def __del__(self):
+        """Cleanup resources when the object is destroyed."""
+        self.cleanup()
+    
+    def cleanup(self):
+        """Cleanup all resources."""
+        try:
+            if self.vis is not None:
+                try:
+                    self.vis.destroy_window()
+                except Exception as e:
+                    logger.warning(f"Error destroying window: {e}")
+                finally:
+                    self.vis = None
+            self.colored_window_open = False
+            
+            # Clear other resources
+            self.pcd = None
+            self.img = None
+            self.corners2d = None
+            self.origin = None
+            self.x_axis = None
+            self.y_axis = None
+            self.R_best = None
+            self.T_best = None
+            
+            # Give some time for resources to be released
+            time.sleep(0.1)
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
     
     def load_camera_params(self, calib_path: str, cam_idx: int = 0) -> bool:
-        """Load camera parameters from calibration file."""
+        """Load camera parameters from calibration file or create ideal parameters."""
         try:
-            logger.info(f"Loading camera parameters from {calib_path}, camera index {cam_idx}")
-            self.K, self.D, self.R_gt, self.T_gt = load_camera_params(calib_path, cam_idx)
+            if not calib_path or not calib_path.strip():
+                # If no calibration file provided, create ideal parameters
+                logger.info("No calibration file provided, creating ideal camera parameters")
+                # Get image size from the loaded image
+                if self.img is None:
+                    raise ValueError("Image must be loaded before creating ideal camera parameters")
+                height, width = self.img.shape[:2]
+                self.K, self.D = create_ideal_camera_params((width, height))
+            else:
+                # Load parameters from calibration file
+                logger.info(f"Loading camera parameters from {calib_path}, camera index {cam_idx}")
+                self.K, self.D = load_camera_params(calib_path, cam_idx)
+            
             logger.debug(f"Loaded camera matrix K:\n{self.K}")
             logger.debug(f"Loaded distortion coefficients D:\n{self.D}")
             return True
@@ -199,49 +250,69 @@ class CalibrationProcess:
                                points: np.ndarray, image: np.ndarray,
                                rvec: np.ndarray, tvec: np.ndarray) -> None:
         """Show colored point cloud visualization."""
-        # Update matrices in colorizer
-        R_mat = cv2.Rodrigues(rvec)[0]
-        colorizer.R = R_mat
-        colorizer.T = tvec.flatten()
-        
-        # Create colored point cloud
-        pcd = colorizer.colorize(points, image)
-        
-        # If visualizer exists, close it
-        if self.vis is not None:
-            self.vis.destroy_window()
-        
-        # Create new visualizer
-        self.vis = o3d.visualization.Visualizer()
-        self.vis.create_window("Colored Point Cloud", 800, 600)
-        self.vis.add_geometry(pcd)
-        
-        # Setup camera
-        bbox = pcd.get_axis_aligned_bounding_box()
-        self.vis.get_view_control().set_zoom(0.8)
-        self.vis.get_view_control().set_front([0, 0, -1])
-        self.vis.get_view_control().set_lookat(bbox.get_center())
-        self.vis.get_view_control().set_up([0, -1, 0])
-        
-        self.colored_window_open = True
-        
-        # Run visualization loop
-        while self.colored_window_open:
-            self.vis.poll_events()
-            self.vis.update_renderer()
+        try:
+            # Update matrices in colorizer
+            R_mat = cv2.Rodrigues(rvec)[0]
+            colorizer.R = R_mat
+            colorizer.T = tvec.flatten()
             
-            if not self.vis.poll_events():
-                self.colored_window_open = False
-                self.vis.destroy_window()
-                break
+            # Create colored point cloud
+            pcd = colorizer.colorize(points, image)
             
-            key_cloud = self.vis.poll_events()
-            if key_cloud == 27:  # ESC
-                self.colored_window_open = False
-                self.vis.destroy_window()
-                break
+            # If visualizer exists, close it
+            if self.vis is not None:
+                try:
+                    self.vis.destroy_window()
+                except Exception as e:
+                    logger.warning(f"Error destroying existing window: {e}")
+                finally:
+                    self.vis = None
+                    time.sleep(0.1)  # Give time for window to close
             
-            cv2.waitKey(10)
+            # Create new visualizer
+            self.vis = o3d.visualization.Visualizer()
+            self.vis.create_window("Colored Point Cloud", 800, 600)
+            self.vis.add_geometry(pcd)
+            
+            # Setup camera
+            bbox = pcd.get_axis_aligned_bounding_box()
+            self.vis.get_view_control().set_zoom(0.8)
+            self.vis.get_view_control().set_front([0, 0, -1])
+            self.vis.get_view_control().set_lookat(bbox.get_center())
+            self.vis.get_view_control().set_up([0, -1, 0])
+            
+            self.colored_window_open = True
+            
+            # Run visualization loop
+            while self.colored_window_open:
+                try:
+                    self.vis.poll_events()
+                    self.vis.update_renderer()
+                    
+                    if not self.vis.poll_events():
+                        self.colored_window_open = False
+                        break
+                    
+                    key_cloud = self.vis.poll_events()
+                    if key_cloud == 27:  # ESC
+                        self.colored_window_open = False
+                        break
+                except Exception as e:
+                    logger.error(f"Error in visualization loop: {e}")
+                    self.colored_window_open = False
+                    break
+        except Exception as e:
+            logger.error(f"Error in colored point cloud visualization: {e}")
+        finally:
+            if self.vis is not None:
+                try:
+                    self.vis.destroy_window()
+                except Exception as e:
+                    logger.warning(f"Error destroying window in finally block: {e}")
+                finally:
+                    self.vis = None
+                    time.sleep(0.1)  # Give time for window to close
+            self.colored_window_open = False
 
     def interactive_refine(self, all_lidar_points: np.ndarray, image: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         """Interactive refinement of the calibration."""

@@ -6,7 +6,7 @@
   - pcd_roi: загрузка и интерактивная разметка ROI в облаке точек.
   - board_geometry: вычисление локальной системы координат шахматной доски
     и генерация/уточнение 3D‐углов доски.
-  - calib_io: чтение параметров камеры и LiDAR→Cam из файлов KITTI.
+  - calib_io: чтение параметров камеры из файлов KITTI.
   - viz_utils: визуализация (проекция LiDAR на изображение, отображение R/T, и т. д.).
 
 Из этого пакета удобно импортировать основные функции:
@@ -20,7 +20,6 @@
         generate_object_points,
         refine_3d_corners,
         load_camera_params,
-        compute_axes_transform,
         reproject_and_show,
         draw_overlay,
         make_overlay_image
@@ -37,7 +36,7 @@ from .pcd_roi import load_point_cloud, select_pointcloud_roi, extract_roi_cloud
 from .board_geometry import compute_board_frame, generate_object_points, refine_3d_corners
 
 # Экспорт функций из подпакета calib_io
-from .calib_io import load_camera_params, compute_axes_transform
+from .calib_io import load_camera_params
 
 # Экспорт функций из подпакета viz_utils
 from .viz_utils import reproject_and_show, draw_overlay, make_overlay_image
@@ -56,7 +55,6 @@ __all__ = [
     "refine_3d_corners",
     # calib_io
     "load_camera_params",
-    "compute_axes_transform",
     # viz_utils
     "reproject_and_show",
     "draw_overlay",
