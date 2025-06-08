@@ -118,4 +118,7 @@ class RectificationWindow(QWidget):
             
     def go_back(self):
         if self.parent():
-            self.parent().show_previous() 
+            # Get the main window instance
+            main_window = self.parent().parent()
+            if main_window and hasattr(main_window, 'show_previous'):
+                main_window.show_previous() 

@@ -26,6 +26,38 @@ def set_light_theme(app: QApplication):
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
     
     app.setPalette(palette)
+    
+    # Set stylesheet for better button and checkbox visibility
+    app.setStyleSheet("""
+        QPushButton {
+            border: 1px solid #999999;
+            border-radius: 4px;
+            padding: 5px;
+            background-color: #f0f0f0;
+        }
+        QPushButton:hover {
+            background-color: #e0e0e0;
+        }
+        QPushButton:pressed {
+            background-color: #d0d0d0;
+        }
+        QCheckBox {
+            spacing: 5px;
+        }
+        QCheckBox::indicator {
+            width: 15px;
+            height: 15px;
+            border: 1px solid #999999;
+            border-radius: 3px;
+        }
+        QCheckBox::indicator:checked {
+            background-color: #0078d7;
+            border: 1px solid #0078d7;
+        }
+        QCheckBox::indicator:unchecked {
+            background-color: white;
+        }
+    """)
 
 def main():
     app = QApplication([])
