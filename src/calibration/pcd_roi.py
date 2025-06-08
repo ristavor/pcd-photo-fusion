@@ -12,7 +12,8 @@ def load_point_cloud(path: str) -> o3d.geometry.PointCloud:
     Загружает облако точек из файла.
 
     Поддерживаемые форматы:
-      - .pcd, .ply: используем o3d.io.read_point_cloud.
+      - .pcd: читаем как текстовый файл, пропускаем заголовок и строки с NaN.
+      - .ply: используем o3d.io.read_point_cloud.
       - .bin : Velodyne Binary → читаем float32, reshape(-1,4), берём первые три столбца.
       - .txt : текстовый файл XYZ или XYZI → np.loadtxt, берём первые три столбца.
 
@@ -29,7 +30,53 @@ def load_point_cloud(path: str) -> o3d.geometry.PointCloud:
     p = Path(path)
     ext = p.suffix.lower()
 
-    if ext in ('.pcd', '.ply'):
+    if ext == '.pcd':
+        # Читаем PCD файл как текстовый
+        with open(p, 'r') as f:
+            lines = f.readlines()
+        
+        # Находим начало данных
+        data_start = 0
+        for i, line in enumerate(lines):
+            if line.strip() == 'DATA ascii':
+                data_start = i + 1
+                break
+        
+        # Читаем только строки с данными, пропуская заголовок
+        data_lines = lines[data_start:]
+        
+        # Фильтруем строки с NaN
+        valid_lines = []
+        for line in data_lines:
+            values = line.strip().split()
+            if len(values) >= 3:  # Проверяем, что есть хотя бы X Y Z
+                try:
+                    x, y, z = map(float, values[:3])
+                    if not (np.isnan(x) or np.isnan(y) or np.isnan(z)):
+                        valid_lines.append(f"{x} {y} {z}")
+                except ValueError:
+                    continue
+        
+        if not valid_lines:
+            raise RuntimeError(f"Нет валидных точек в PCD файле: {path}")
+        
+        # Создаем временный файл с валидными точками
+        temp_file = p.parent / f"{p.stem}_valid.txt"
+        try:
+            with open(temp_file, 'w') as f:
+                f.write('\n'.join(valid_lines))
+            
+            # Загружаем точки из временного файла
+            data = np.loadtxt(str(temp_file), dtype=np.float32)
+            if data.ndim == 1:
+                data = data.reshape(1, -1)
+            pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(data))
+        finally:
+            # Удаляем временный файл
+            if temp_file.exists():
+                temp_file.unlink()
+                
+    elif ext == '.ply':
         pcd = o3d.io.read_point_cloud(str(p))
     elif ext == '.bin':
         data = np.fromfile(str(p), dtype=np.float32)

@@ -7,6 +7,7 @@ from PyQt6.QtCore import Qt
 from pathlib import Path
 from colorizer import Colorizer, read_velo_to_cam
 from rectifier import ImageRectifier, read_kitti_cam_calib
+from calibration.calib_io import create_ideal_camera_params
 import cv2
 import numpy as np
 import open3d as o3d
@@ -57,9 +58,14 @@ class ColorizationWindow(QWidget):
         pcd_layout.addWidget(self.pcd_btn)
         layout.addLayout(pcd_layout)
         
-        # Camera calibration file selection
+        # KITTI dataset checkbox
+        self.kitti_checkbox = QCheckBox("KITTI dataset")
+        self.kitti_checkbox.stateChanged.connect(self.on_kitti_changed)
+        layout.addWidget(self.kitti_checkbox)
+        
+        # Camera calibration file selection (now optional)
         cam_calib_layout = QHBoxLayout()
-        self.cam_calib_label = QLabel("Camera calibration file:")
+        self.cam_calib_label = QLabel("Camera calibration file (optional):")
         self.cam_calib_path_label = QLabel("No file selected")
         self.cam_calib_btn = QPushButton("Browse")
         self.cam_calib_btn.clicked.connect(self.select_camera_calibration)
@@ -84,6 +90,7 @@ class ColorizationWindow(QWidget):
         self.cam_label = QLabel("Camera index:")
         self.cam_spinbox = QSpinBox()
         self.cam_spinbox.setRange(0, 3)  # KITTI has cameras 0-3
+        self.cam_spinbox.setEnabled(False)  # Initially disabled
         cam_layout.addWidget(self.cam_label)
         cam_layout.addWidget(self.cam_spinbox)
         layout.addLayout(cam_layout)
@@ -110,6 +117,11 @@ class ColorizationWindow(QWidget):
         self.back_btn.clicked.connect(self.go_back)
         layout.addWidget(self.back_btn)
         
+    def on_kitti_changed(self, state):
+        """Handle KITTI checkbox state change."""
+        is_kitti = state == Qt.CheckState.Checked.value
+        self.cam_spinbox.setEnabled(is_kitti)
+        
     def select_image(self):
         file_name, _ = QFileDialog.getOpenFileName(
             self, "Select Image", "", "Image Files (*.png *.jpg *.jpeg)"
@@ -119,7 +131,7 @@ class ColorizationWindow(QWidget):
             
     def select_point_cloud(self):
         file_name, _ = QFileDialog.getOpenFileName(
-            self, "Select Point Cloud", "", "Point Cloud Files (*.bin *.txt)"
+            self, "Select Point Cloud", "", "Point Cloud Files (*.bin *.txt *.pcd)"
         )
         if file_name:
             self.pcd_path_label.setText(file_name)
@@ -132,17 +144,23 @@ class ColorizationWindow(QWidget):
             self.cam_calib_path_label.setText(file_name)
             
     def select_velodyne_calibration(self):
+        is_kitti = self.kitti_checkbox.isChecked()
+        if is_kitti:
+            file_filter = "Text Files (*.txt)"
+        else:
+            file_filter = "JSON Files (*.json)"
+            
         file_name, _ = QFileDialog.getOpenFileName(
-            self, "Select Velodyne Calibration", "", "Text Files (*.txt)"
+            self, "Select Velodyne Calibration", "", file_filter
         )
         if file_name:
             self.velo_calib_path_label.setText(file_name)
             
     def process_colorization(self):
-        # Check if all required files are selected
+        # Check if required files are selected
         if any(label.text() == "No file selected" for label in [
             self.img_path_label, self.pcd_path_label,
-            self.cam_calib_path_label, self.velo_calib_path_label
+            self.velo_calib_path_label
         ]):
             QMessageBox.warning(self, "Error", "Please select all required files")
             return
@@ -154,6 +172,7 @@ class ColorizationWindow(QWidget):
             print("Camera calibration file:", self.cam_calib_path_label.text())
             print("Velodyne calibration file:", self.velo_calib_path_label.text())
             print("Camera index:", self.cam_spinbox.value())
+            print("Is KITTI dataset:", self.kitti_checkbox.isChecked())
             
             # Load image
             img = cv2.imread(self.img_path_label.text())
@@ -164,39 +183,47 @@ class ColorizationWindow(QWidget):
 
             # Get camera matrix K
             cam_idx = self.cam_spinbox.value()
-            if not self.rectified_checkbox.isChecked():
-                # Rectify image if not already rectified
-                rectifier = ImageRectifier(
-                    calib_cam_path=self.cam_calib_path_label.text(),
-                    cam_idx=cam_idx
-                )
-                img = rectifier.rectify(img)
-                K = rectifier.P_new
-                print("Image rectified, new shape:", img.shape)
+            cam_calib_path = self.cam_calib_path_label.text()
+            is_kitti = self.kitti_checkbox.isChecked()
+            
+            if cam_calib_path == "No file selected":
+                # Create ideal camera parameters if no calibration file provided
+                print("No camera calibration file provided, using ideal parameters")
+                K, _ = create_ideal_camera_params((img.shape[1], img.shape[0]))
+                if not self.rectified_checkbox.isChecked():
+                    # For ideal parameters, we don't need rectification
+                    print("Using ideal camera parameters (no rectification needed)")
+                else:
+                    print("Using ideal camera parameters (image marked as rectified)")
             else:
-                # Use P_rect from calibration file directly
-                K = read_rectified_K(self.cam_calib_path_label.text(), cam_idx)
-                print("Using existing rectified image")
+                if not is_kitti:
+                    raise ValueError("Camera calibration file is only supported for KITTI dataset")
+                    
+                if not self.rectified_checkbox.isChecked():
+                    # Rectify image if not already rectified
+                    rectifier = ImageRectifier(
+                        calib_cam_path=cam_calib_path,
+                        cam_idx=cam_idx
+                    )
+                    img = rectifier.rectify(img)
+                    K = rectifier.P_new
+                    print("Image rectified, new shape:", img.shape)
+                else:
+                    # Use P_rect from calibration file directly
+                    K = read_rectified_K(cam_calib_path, cam_idx)
+                    print("Using existing rectified image")
             
             print("Camera matrix K:\n", K)
             
-            # Load point cloud
-            pcd_path = Path(self.pcd_path_label.text())
-            if pcd_path.suffix == '.bin':
-                pts = np.fromfile(str(pcd_path), dtype=np.float32)
-                print("Loaded .bin point cloud, raw shape:", pts.shape)
-                pts = pts.reshape(-1, 4)
+            # Load point cloud using the loader module
+            from colorizer.loader import load_point_cloud
+            pts = load_point_cloud(self.pcd_path_label.text())
+            if pts.shape[1] > 3:
                 pts = pts[:, :3]
-            else:  # .txt
-                pts = np.loadtxt(str(pcd_path), dtype=np.float32)
-                print("Loaded .txt point cloud, raw shape:", pts.shape)
-                if pts.ndim == 1:
-                    pts = pts.reshape(1, -1)
-                pts = pts[:, :3]
-            print("Point cloud shape (N, 3):", pts.shape)
+            print("Point cloud shape:", pts.shape)
             
             # Get calibration matrices
-            R, T = read_velo_to_cam(self.velo_calib_path_label.text())
+            R, T = read_velo_to_cam(self.velo_calib_path_label.text(), is_kitti=is_kitti)
             print("R (velo_to_cam):\n", R)
             print("T (velo_to_cam):", T)
             

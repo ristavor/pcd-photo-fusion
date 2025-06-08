@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from typing import Dict, Tuple
+import json
 
 import numpy as np
 
@@ -25,20 +26,44 @@ def read_cam_to_cam(path: str) -> Dict[str, np.ndarray]:
     return data
 
 
-def read_velo_to_cam(path: str) -> Tuple[np.ndarray, np.ndarray]:
+def read_velo_to_cam(path: str, is_kitti: bool = True) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Считывает из calib_velo_to_cam.txt параметры R (3×3) и T (3,).
+    Считывает параметры R (3×3) и T (3,) из файла velo_to_cam.
+    
+    Параметры:
+        path (str): путь к файлу калибровки
+        is_kitti (bool): True для формата KITTI, False для JSON
+        
+    Возвращает:
+        Tuple[np.ndarray, np.ndarray]: (R, T) где R - матрица 3x3, T - вектор 3x1
     """
-    data: Dict[str, np.ndarray] = {}
-    with open(path, 'r') as f:
-        for line in f:
-            if ':' not in line:
-                continue
-            key, vals = line.split(':', 1)
-            data[key.strip()] = np.fromstring(vals, sep=' ')
-    R = data['R'].reshape(3, 3)
-    T = data['T']
-    return R, T
+    if is_kitti:
+        # KITTI
+        with open(path, 'r') as f:
+            lines = f.readlines()
+        data = {}
+        for line in lines:
+            if ':' in line:
+                key, vals = line.split(':', 1)
+                data[key.strip()] = np.fromstring(vals, sep=' ')
+        R = data.get('R')
+        T = data.get('T')
+        if R is None or T is None:
+            raise ValueError("Файл KITTI velo_to_cam должен содержать R и T")
+        R = R.reshape(3, 3)
+        T = T.reshape(3)
+        return R, T
+    else:
+        with open(path, 'r') as f:
+            data = json.load(f)
+        # Поддержка альтернативных ключей
+        R = data.get('R') or data.get('R_matrix')
+        T = data.get('T') or data.get('T_vector')
+        if R is None or T is None:
+            raise ValueError("JSON must contain 'R' (или 'R_matrix') и 'T' (или 'T_vector')")
+        R = np.array(R)
+        T = np.array(T)
+        return R, T
 
 
 def read_kitti_cam_calib(path: str, cam_idx: int
