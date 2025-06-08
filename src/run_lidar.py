@@ -5,8 +5,8 @@ import open3d as o3d
 
 # 1) Укажите путь к бинарному файлу Velodyne (берём кадр 0000000000)
 ROOT = Path(__file__).resolve().parent.parent
-velo_path = ROOT / 'data/2011_09_28_drive_0034_sync' \
-            / 'velodyne_points' / 'data' / '0000000000.bin'
+velo_path = ROOT / 'data/2011_09_26_drive_0119_test' \
+            / 'velodyne_points' / 'data' / '0000000000.txt'
 
 
 # 2) Функция загрузки LiDAR точек из .bin
