@@ -3,6 +3,7 @@
 import argparse
 import cv2
 import numpy as np
+import open3d as o3d
 
 from calibration.image_corners import (
     detect_image_corners,
@@ -24,6 +25,7 @@ from calibration.viz_utils import (
     draw_overlay,
     make_overlay_image
 )
+from colorizer import Colorizer
 
 
 def rotation_error_deg(R_est: np.ndarray, R_gt: np.ndarray) -> float:
@@ -102,6 +104,7 @@ def interactive_refine_RT(
     Интерактивная корректировка:
       - rvec можно крутить кнопками (W/S/A/D/Q/E) и мышью (перетаскивание ЛКМ).
       - tvec меняется кнопками (I/K, J/L, U/O).
+      - M: показать окрашенное облако точек.
     Возвращает (rvec, tvec) при нажатии ESC.
     """
     rvec = rvec_init.copy()
@@ -113,6 +116,14 @@ def interactive_refine_RT(
 
     dragging = False
     last_x = last_y = 0
+    
+    # Создаем colorizer для окраски точек
+    R_mat = cv2.Rodrigues(rvec)[0]
+    colorizer = Colorizer(R_mat, tvec.flatten(), K)
+    
+    # Создаем визуализатор для окрашенного облака
+    vis = None
+    colored_window_open = False
 
     def on_mouse(event, x, y, flags, _):
         nonlocal dragging, last_x, last_y, rvec
@@ -153,7 +164,60 @@ def interactive_refine_RT(
         elif key == ord('l'): tvec[1] += delta_t
         elif key == ord('u'): tvec[2] -= delta_t
         elif key == ord('o'): tvec[2] += delta_t
+        
+        # Показать окрашенное облако
+        elif key == ord('m'):
+            # Обновляем матрицы в colorizer
+            R_mat = cv2.Rodrigues(rvec)[0]
+            colorizer.R = R_mat
+            colorizer.T = tvec.flatten()
+            
+            # Создаем окрашенное облако
+            pcd = colorizer.colorize(all_lidar_points, image)
+            
+            # Если визуализатор уже существует, закрываем его
+            if vis is not None:
+                vis.destroy_window()
+            
+            # Создаем новый визуализатор
+            vis = o3d.visualization.Visualizer()
+            vis.create_window("Colored Point Cloud", 800, 600)
+            vis.add_geometry(pcd)
+            
+            # Настраиваем камеру
+            bbox = pcd.get_axis_aligned_bounding_box()
+            vis.get_view_control().set_zoom(0.8)
+            vis.get_view_control().set_front([0, 0, -1])
+            vis.get_view_control().set_lookat(bbox.get_center())
+            vis.get_view_control().set_up([0, -1, 0])
+            
+            colored_window_open = True
+            
+            # Запускаем отдельный цикл для обработки окна с облаком
+            while colored_window_open:
+                # Обновляем визуализацию
+                vis.poll_events()
+                vis.update_renderer()
+                
+                # Проверяем, закрыто ли окно
+                if not vis.poll_events():
+                    colored_window_open = False
+                    vis.destroy_window()
+                    break
+                
+                # Обработка клавиш для управления камерой
+                key_cloud = vis.poll_events()
+                if key_cloud == 27:  # ESC
+                    colored_window_open = False
+                    vis.destroy_window()
+                    break
+                
+                # Даем небольшую задержку для снижения нагрузки на CPU
+                cv2.waitKey(10)
 
+    # Закрываем визуализатор при выходе
+    if vis is not None:
+        vis.destroy_window()
     cv2.destroyWindow("Overlay")
     return rvec, tvec
 
