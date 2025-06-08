@@ -65,11 +65,13 @@ def make_overlay_image(
     tvec: NDArray[np.float64],
     K: NDArray[np.float64],
     D: NDArray[np.float64],
-    image: NDArray[np.uint8]
+    image: NDArray[np.uint8],
+    gamma: float = 0.3  # Параметр для усиления градиента
 ) -> NDArray[np.uint8]:
     """
     Возвращает NumPy-изображение overlay (BGR), в котором на исходное image
-    наложены красные точки LiDAR по rvec/tvec. Не вызывает imshow и waitKey.
+    наложены точки LiDAR по rvec/tvec. Цвет точек зависит от относительной глубины:
+    зеленый - ближайшие точки в кадре, красный - самые дальние точки в кадре.
 
     Параметры:
       all_lidar (NDArray[float64], shape (N,3)): XYZ LiDAR-точки.
@@ -78,10 +80,12 @@ def make_overlay_image(
       K (NDArray[float64], shape (3,3)): матрица внутренних параметров камеры.
       D (NDArray[float64], shape (5,)): коэффициенты дисторсии.
       image (NDArray[uint8], shape (H,W,3)): BGR-изображение.
+      gamma (float): параметр для усиления градиента (0.1-1.0).
+        Меньшие значения дают более резкий переход цветов.
 
     Возвращает:
-      overlay (NDArray[uint8], shape (H,W,3)): кадр, на котором закрашены
-        красным цветом проекции LiDAR-точек (без блокирующего waitKey).
+      overlay (NDArray[uint8], shape (H,W,3)): кадр с точками, окрашенными
+        в зависимости от относительной глубины (без блокирующего waitKey).
     """
     pts = all_lidar.reshape(-1, 3).astype(np.float64)
 
@@ -93,16 +97,59 @@ def make_overlay_image(
     P_cam = (R_mat @ all_lidar.T + tvec).T  # (N×3)
     z = P_cam[:, 2]
 
+    # Вычисляем углы поля зрения камеры
+    fov_x = 2 * np.arctan2(K[0,2], K[0,0])  # горизонтальный угол обзора
+    fov_y = 2 * np.arctan2(K[1,2], K[1,1])  # вертикальный угол обзора
+
+    # Вычисляем углы для каждой точки относительно оптической оси камеры
+    x_cam = P_cam[:, 0]
+    y_cam = P_cam[:, 1]
+    angles_x = np.arctan2(x_cam, z)
+    angles_y = np.arctan2(y_cam, z)
+
     h, w = image.shape[:2]
     u = uv[:, 0]
     v = uv[:, 1]
-    mask = (z > 0) & (u >= 0) & (u < w) & (v >= 0) & (v < h)
+
+    # Комбинируем все условия фильтрации:
+    # 1. Положительная глубина
+    # 2. Точка в пределах изображения
+    # 3. Точка в пределах поля зрения камеры
+    mask = (
+        (z > 0) & 
+        (u >= 0) & (u < w) & 
+        (v >= 0) & (v < h) &
+        (np.abs(angles_x) < fov_x/2) &
+        (np.abs(angles_y) < fov_y/2)
+    )
 
     u_vis = u[mask].astype(np.int32)
     v_vis = v[mask].astype(np.int32)
+    z_vis = z[mask]
+
+    # Если после фильтрации не осталось точек, возвращаем исходное изображение
+    if len(z_vis) == 0:
+        return image.copy()
+
+    # Находим минимальную и максимальную глубину среди видимых точек
+    min_z = np.min(z_vis)
+    max_z = np.max(z_vis)
+    
+    # Нормализуем глубину относительно видимых точек (0 - близко, 1 - далеко)
+    z_normalized = (z_vis - min_z) / (max_z - min_z)
+    
+    # Применяем степенное преобразование для усиления градиента
+    z_normalized = np.power(z_normalized, gamma)
+    
+    # Создаем цвета: зеленый (близко) -> красный (далеко)
+    # BGR формат: (0,255,0) - зеленый, (0,0,255) - красный
+    colors = np.zeros((len(z_vis), 3), dtype=np.uint8)
+    colors[:, 1] = (255 * (1 - z_normalized)).astype(np.uint8)  # G канал (зеленый)
+    colors[:, 2] = (255 * z_normalized).astype(np.uint8)        # R канал (красный)
 
     overlay = image.copy()
-    overlay[v_vis, u_vis] = (0, 0, 255)  # красный в BGR
+    for (ui, vi), color in zip(zip(u_vis, v_vis), colors):
+        overlay[vi, ui] = color
 
     return overlay
 

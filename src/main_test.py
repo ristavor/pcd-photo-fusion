@@ -255,9 +255,6 @@ def main():
             overlay_img = make_overlay_image(np.asarray(pcd.points), rvec, tvec, K, D, img)
             cv2.putText(overlay_img, name, (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-            cv2.putText(overlay_img, f"rot_err={err_deg:.2f}°, t_err={err_t:.3f}m",
-                        (10, 55),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
 
             cv2.imshow("ChooseConfig", overlay_img)
             key = cv2.waitKey(0) & 0xFF

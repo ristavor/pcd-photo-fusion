@@ -1,2 +1,7 @@
 /data/
 /.venv/
+src/calibration/__pycache__
+src/colorizer/__pycache__
+src/rectifier/__pycache__
+src/utils/__pycache__
+src/synchronizer/__pycache__
