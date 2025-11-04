@@ -1,0 +1,10 @@
+# Core dependencies
+numpy
+opencv-python
+open3d
+PyQt6
+
+# Development dependencies (optional)
+# pytest>=7.0.0
+# black>=22.0.0
+# flake8>=4.0.0
