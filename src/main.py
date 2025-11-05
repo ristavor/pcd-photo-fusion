@@ -1,6 +1,10 @@
-# main.py
-# !/usr/bin/env python3
+#!/usr/bin/env python3
+"""
+Main entry point for PCD-Photo-Fusion application.
+By default, launches the GUI. Use --cli flag for command-line mode.
+"""
 import sys
+import argparse
 from pathlib import Path
 
 import cv2
@@ -35,7 +39,76 @@ def color_and_show(img: np.ndarray, pts: np.ndarray, window_name: str, colorizer
     return vis
 
 
-def main():
+def run_gui():
+    """Launch the GUI application."""
+    try:
+        from PyQt6.QtWidgets import QApplication
+        from PyQt6.QtGui import QPalette, QColor
+        from calibration_gui.main_window import MainWindow
+        
+        def set_light_theme(app: QApplication):
+            """Set light theme for the application."""
+            palette = QPalette()
+            palette.setColor(QPalette.ColorRole.Window, QColor(240, 240, 240))
+            palette.setColor(QPalette.ColorRole.WindowText, QColor(0, 0, 0))
+            palette.setColor(QPalette.ColorRole.Base, QColor(255, 255, 255))
+            palette.setColor(QPalette.ColorRole.AlternateBase, QColor(233, 233, 233))
+            palette.setColor(QPalette.ColorRole.ToolTipBase, QColor(255, 255, 255))
+            palette.setColor(QPalette.ColorRole.ToolTipText, QColor(0, 0, 0))
+            palette.setColor(QPalette.ColorRole.Text, QColor(0, 0, 0))
+            palette.setColor(QPalette.ColorRole.Button, QColor(240, 240, 240))
+            palette.setColor(QPalette.ColorRole.ButtonText, QColor(0, 0, 0))
+            palette.setColor(QPalette.ColorRole.Link, QColor(0, 0, 255))
+            palette.setColor(QPalette.ColorRole.Highlight, QColor(0, 120, 215))
+            palette.setColor(QPalette.ColorRole.HighlightedText, QColor(255, 255, 255))
+            
+            app.setPalette(palette)
+            
+            # Set stylesheet for better button and checkbox visibility
+            app.setStyleSheet("""
+                QPushButton {
+                    border: 1px solid #999999;
+                    border-radius: 4px;
+                    padding: 5px;
+                    background-color: #f0f0f0;
+                }
+                QPushButton:hover {
+                    background-color: #e0e0e0;
+                }
+                QPushButton:pressed {
+                    background-color: #d0d0d0;
+                }
+                QCheckBox {
+                    spacing: 5px;
+                }
+                QCheckBox::indicator {
+                    width: 15px;
+                    height: 15px;
+                    border: 1px solid #999999;
+                    border-radius: 3px;
+                }
+                QCheckBox::indicator:checked {
+                    background-color: #0078d7;
+                    border: 1px solid #0078d7;
+                }
+                QCheckBox::indicator:unchecked {
+                    background-color: white;
+                }
+            """)
+        
+        app = QApplication(sys.argv)
+        set_light_theme(app)
+        window = MainWindow()
+        window.show()
+        sys.exit(app.exec())
+    except ImportError as e:
+        print(f"Error: GUI dependencies not found. Please install PyQt6.")
+        print(f"Details: {e}")
+        sys.exit(1)
+
+
+def run_cli():
+    """Run command-line interface mode for KITTI data processing."""
     base = Path(__file__).resolve().parent.parent
     raw_root = base / "data" / "2011_09_28_drive_0034_extract"
     sync_root = base / "data" / "2011_09_28_drive_0034_sync"
@@ -136,6 +209,43 @@ def main():
         vis_raw.destroy_window()
         vis_sync.destroy_window()
         cv2.destroyAllWindows()
+
+
+def main():
+    """Main entry point with argument parsing."""
+    parser = argparse.ArgumentParser(
+        description='PCD-Photo-Fusion - KITTI data processing tool',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python main.py              # Launch GUI (default)
+  python main.py --gui        # Launch GUI explicitly
+  python main.py --cli        # Run CLI mode for KITTI processing
+        """
+    )
+    
+    parser.add_argument(
+        '--cli',
+        action='store_true',
+        help='Run in command-line mode instead of GUI'
+    )
+    
+    parser.add_argument(
+        '--gui',
+        action='store_true',
+        help='Run in GUI mode (default)'
+    )
+    
+    args = parser.parse_args()
+    
+    # If no arguments or --gui specified, launch GUI
+    # If --cli specified, run CLI mode
+    if args.cli:
+        print("Starting CLI mode...")
+        run_cli()
+    else:
+        print("Starting GUI mode...")
+        run_gui()
 
 
 if __name__ == "__main__":
